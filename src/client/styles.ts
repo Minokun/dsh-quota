@@ -23,6 +23,12 @@ export const PANEL_CSS = `
 .dq-dot--err { background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.7); }
 .dq-dot--idle { background: #888; }
 .dq-pill .dq-pill-time { font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
+.dq-pill .dq-pill-model {
+  font-size: 11px; font-weight: 600; max-width: 150px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 1px 8px; border-radius: 999px;
+  background: rgba(91, 108, 255, 0.14); color: var(--dsw-alias-brand-primary, #5b6cff);
+}
 
 .dq-panel {
   width: 340px; max-height: min(64vh, 600px); overflow-y: auto; border-radius: 14px;

@@ -83,6 +83,8 @@ export interface QuotaPanelState {
   customDraft: CustomDraft
   /** Add/remove round trip in flight. */
   savingCustom: boolean
+  /** DSH 当前默认模型及额度摘要（pill 展示）。 */
+  currentModel: { provider: string; model: string; platform: string; summary: string }
 }
 
 /** The registration-side face the slot entry injects. */
@@ -121,6 +123,7 @@ const INITIAL: QuotaPanelState = {
   showCustom: false,
   customDraft: { label: '', endpoint: '', keyRef: '', format: 'openai-billing' },
   savingCustom: false,
+  currentModel: { provider: '', model: '', platform: '', summary: '' },
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -165,7 +168,7 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[] }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel'] }>('/status')
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -174,6 +177,7 @@ export class QuotaPanelController {
         keys: state.keys,
         customPlatforms: state.httpPlatforms ?? [],
         formats: state.formats ?? [],
+        ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
     } catch {
       this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })

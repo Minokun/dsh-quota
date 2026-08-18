@@ -98,8 +98,22 @@ export interface Config {
   mcpPlatforms: CustomMcpPlatform[]
   /** Extra user-declared direct-HTTP platforms (default []). */
   httpPlatforms: CustomHttpPlatform[]
+  /** DSH 当前默认模型及其额度摘要（pill 展示；取不到时字段为空）。 */
+  currentModel: {
+    /** 模型供应商 id，如 kimi-coding。 */
+    provider: string
+    /** 模型 id，如 k3。 */
+    model: string
+    /** 匹配到的面板平台 id（未匹配为空）。 */
+    platform: string
+    /** 一句话额度摘要，如 "周额度 剩68" / "总余额 ¥284.73"。 */
+    summary: string
+  }
   providers: ProviderSnapshot[]
 }
+
+/** Empty current-model summary. */
+export const EMPTY_CURRENT_MODEL: Config['currentModel'] = { provider: '', model: '', platform: '', summary: '' }
 
 /** Schema resolving the namespace; defaults double as the composition defaults. */
 export const Config: z<Config> = z.object({
@@ -119,6 +133,12 @@ export const Config: z<Config> = z.object({
     keyRef: z.string(),
     format: z.string(),
   })).default([]),
+  currentModel: z.object({
+    provider: z.string().default(''),
+    model: z.string().default(''),
+    platform: z.string().default(''),
+    summary: z.string().default(''),
+  }).default({ provider: '', model: '', platform: '', summary: '' }),
   providers: z.array(z.object({
     id: z.string(),
     label: z.string(),

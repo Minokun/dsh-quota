@@ -12,13 +12,52 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { Config, CustomHttpPlatform, CustomMcpPlatform, ProviderSnapshot } from './config.ts'
-import { KEY_REFS } from './config.ts'
+import type { Config, CustomHttpPlatform, CustomMcpPlatform, ProviderSnapshot, QuotaItem } from './config.ts'
+import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
+
+/** The DSH default-model selection (agent-default-model settings namespace). */
+export interface DefaultModelSelection {
+  provider: string
+  model: string
+}
+
+/** Map a model-provider id (llm-pi-ai) onto a quota platform id. */
+function platformForProvider(provider: string): string {
+  const p = provider.toLowerCase()
+  if (p.includes('kimi')) return 'kimi'
+  if (p.includes('deepseek')) return 'deepseek'
+  if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
+  if (p.includes('zai')) return 'zhipu'
+  if (p.includes('qwen') || p.includes('dashscope') || p.includes('bailian')) return 'qianwen'
+  if (p.includes('moonshot')) return 'moonshot'
+  if (p.includes('openrouter')) return 'openrouter'
+  if (p.includes('siliconflow')) return 'siliconflow'
+  if (p.includes('minimax')) return 'minimax'
+  if (p.includes('step')) return 'stepfun'
+  if (p.includes('xai') || p.includes('grok')) return 'xai'
+  if (p.includes('opencode')) return 'opencode-go'
+  return ''
+}
+
+/** One-line quota summary for the pill, from one platform's items. */
+function summarize(snapshot: ProviderSnapshot): string {
+  if (snapshot.status !== 'ok') return ''
+  const head = (item: QuotaItem): string | undefined => {
+    if (item.remaining !== undefined) return `${item.label} 剩${item.remaining}`
+    if (item.display) return `${item.label} ${item.display}`
+    if (item.percent !== undefined) return `${item.label} 剩${Math.max(0, 100 - item.percent)}%`
+    return undefined
+  }
+  // Prefer the window/balance headlines over detail rows.
+  const priority = snapshot.items.find((i) => /周额度|小时窗口|总余额|余额|额度/.test(i.label))
+  const first = priority ?? snapshot.items[0]
+  return first ? head(first) ?? '' : ''
+}
 
 /** One resolved API key and where it came from. */
 export interface ResolvedKey {
@@ -72,12 +111,14 @@ export class QuotaController implements QuotaControllerFace {
   private readonly getScope: () => SettingsScope<Config> | undefined
   private readonly getCredentials: () => CredentialProvider | undefined
   private readonly getCustomPlatforms: () => CustomMcpPlatform[]
+  private readonly getDefaultModel: () => DefaultModelSelection | undefined
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => []) {
+  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined) {
     this.ctx = ctx
     this.getScope = getScope
     this.getCredentials = getCredentials
     this.getCustomPlatforms = getCustomPlatforms
+    this.getDefaultModel = getDefaultModel
   }
 
   /** Built-in MCP adapters plus user-declared ones (id collisions ignored). */
@@ -91,7 +132,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], currentModel: EMPTY_CURRENT_MODEL, providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -195,8 +236,17 @@ export class QuotaController implements QuotaControllerFace {
         }))
         .filter((p): p is ProviderSnapshot => p !== null && p.status !== 'missing-mcp')
 
-      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers }
-      await this.patch({ refreshedAt: startedAt, refreshing: false, providers })
+      // DSH 当前默认模型 → 匹配面板平台 → 一句话额度摘要（pill 展示）。
+      const dm = this.getDefaultModel()
+      let currentModel = EMPTY_CURRENT_MODEL
+      if (dm?.provider) {
+        const platform = platformForProvider(dm.provider)
+        const row = platform ? providers.find((p) => p.id === platform) : undefined
+        currentModel = { provider: dm.provider, model: dm.model, platform, summary: row ? summarize(row) : '' }
+      }
+
+      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel }
+      await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel })
       return state
     } catch (error) {
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false }

@@ -236,10 +236,13 @@ export function QuotaPanel(props: QuotaPanelProps) {
         type="button"
         className="dq-pill"
         onClick={() => { props.toggle() }}
-        title="查看各平台会员额度"
+        title={state.currentModel.summary
+          ? `当前模型 ${state.currentModel.provider}/${state.currentModel.model}：${state.currentModel.summary}`
+          : '查看各平台会员额度'}
       >
         <span className={`dq-dot ${dotClass(state)}`} />
         <span>会员额度</span>
+        {state.currentModel.summary && <span className="dq-pill-model">{state.currentModel.summary}</span>}
         {state.refreshedAt && <span className="dq-pill-time">{shortTime(state.refreshedAt)}</span>}
       </button>
     </div>

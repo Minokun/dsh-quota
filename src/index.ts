@@ -40,10 +40,25 @@ const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
  */
 export function apply(ctx: Context, config: Config): void {
   let scope: SettingsScope<Config> | undefined
-  const quota = new QuotaController(ctx, () => scope, () => ctx.get('credentials'), () => config.mcpPlatforms ?? [])
+  let settingsSvc: { describe?: (options?: { redactSecrets?: boolean }) => Array<{ ns: string; value: unknown }> } | undefined
+  const quota = new QuotaController(
+    ctx,
+    () => scope,
+    () => ctx.get('credentials'),
+    () => config.mcpPlatforms ?? [],
+    () => {
+      // agent-default-model namespace: { provider, model } — read live per refresh.
+      const d = settingsSvc?.describe?.().find((x) => x.ns === 'agent-default-model')
+      const v = d?.value as { provider?: unknown; model?: unknown } | undefined
+      return typeof v?.provider === 'string' && typeof v?.model === 'string'
+        ? { provider: v.provider, model: v.model }
+        : undefined
+    },
+  )
   registerTools(ctx, quota)
 
   ctx.inject(['settings'], (sctx) => {
+    settingsSvc = sctx.settings as typeof settingsSvc
     scope = sctx.settings.register(QUOTA_NS as SettingsNamespace, Config, { base: config })
   })
 
