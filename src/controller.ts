@@ -12,10 +12,10 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { Config, ProviderSnapshot } from './config.ts'
+import type { Config, CustomMcpPlatform, ProviderSnapshot } from './config.ts'
 import { KEY_REFS } from './config.ts'
 import { DIRECT_ADAPTERS } from './direct.ts'
-import { MCP_ADAPTERS, runMcpAdapter } from './mcp.ts'
+import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
@@ -67,16 +67,27 @@ export class QuotaController implements QuotaControllerFace {
   private readonly ctx: Context
   private readonly getScope: () => SettingsScope<Config> | undefined
   private readonly getCredentials: () => CredentialProvider | undefined
+  private readonly getCustomPlatforms: () => CustomMcpPlatform[]
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined) {
+  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => []) {
     this.ctx = ctx
     this.getScope = getScope
     this.getCredentials = getCredentials
+    this.getCustomPlatforms = getCustomPlatforms
+  }
+
+  /** Built-in MCP adapters plus user-declared ones (id collisions ignored). */
+  private mcpAdapters(): McpAdapter[] {
+    const builtinIds = new Set(MCP_ADAPTERS.map((a) => a.id))
+    const custom = this.getCustomPlatforms()
+      .filter((p) => p.id && p.label && p.tools.length > 0 && !builtinIds.has(p.id))
+      .map(customAdapter)
+    return [...MCP_ADAPTERS, ...custom]
   }
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -124,7 +135,7 @@ export class QuotaController implements QuotaControllerFace {
       })
 
       const mcpJobs = tools
-        ? MCP_ADAPTERS.map(async (adapter) => {
+        ? this.mcpAdapters().map(async (adapter) => {
             try {
               return await runMcpAdapter(tools as ToolRuntime, adapter)
             } catch (error) {
@@ -138,7 +149,7 @@ export class QuotaController implements QuotaControllerFace {
               }
             }
           })
-        : MCP_ADAPTERS.map((adapter): ProviderSnapshot => ({
+        : this.mcpAdapters().map((adapter): ProviderSnapshot => ({
             id: adapter.id,
             label: adapter.label,
             status: 'missing-mcp',

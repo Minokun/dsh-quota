@@ -275,6 +275,40 @@ const supawriter: McpAdapter = {
 export const MCP_ADAPTERS: McpAdapter[] = [bigmodel, qianwen, scnet, tokenrouter, supawriter]
 
 /**
+ * Generic projection for user-declared platforms: quota-shaped rows first
+ * (anything with remaining/limit or used/limit), then a balance-like number,
+ * else the raw JSON snippet. Enough for most `mcp__*__*quota*` tools without
+ * a hand-written parser.
+ */
+export function genericParse(results: Array<{ name: string; value: unknown }>): QuotaItem[] {
+  const items: QuotaItem[] = []
+  for (const { value } of results) {
+    const rows = quotaRows(value)
+    if (rows.length > 0) {
+      for (const r of rows.slice(0, 4)) items.push(rowItem(r, '配额'))
+      continue
+    }
+    const bal = moneyItem(value, '余额/额度', [
+      'balance', 'availableAmount', 'availableBalance', 'available_balance',
+      'total_balance', 'remaining', 'remainingQuota', 'quota',
+    ])
+    if (bal) items.push(bal)
+  }
+  if (items.length === 0) items.push({ label: '原始返回', display: JSON.stringify(results).slice(0, 200) })
+  return items
+}
+
+/** Build an MCP adapter from a user-declared platform (composition config). */
+export function customAdapter(platform: { id: string; label: string; tools: string[] }): McpAdapter {
+  return {
+    id: platform.id,
+    label: platform.label,
+    calls: platform.tools.map((name) => ({ name })),
+    parse: genericParse,
+  }
+}
+
+/**
  * Run one adapter's tool calls through ctx.tools and parse the results.
  * @param tools - the host tool runtime.
  * @param adapter - the platform adapter.

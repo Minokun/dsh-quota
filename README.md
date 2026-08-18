@@ -44,6 +44,19 @@ dsh plugin --profile web add dsh-quota
     refreshIntervalMinutes: 30   # 定时刷新间隔，0 关闭（默认 0）
 ```
 
+### 接入你自己的 MCP 平台
+
+除了上述内置平台，composition 里声明 `mcpPlatforms` 即可把任何已注册的 `mcp__*` 额度工具接进面板（通用解析：自动识别 used/limit/remaining 形的配额行与 balance 形余额；未注册时该行自动隐藏）：
+
+```yaml
+- id: quota
+  config:
+    mcpPlatforms:
+      - id: mysite
+        label: 我的平台
+        tools: ['mcp__mysite__my_quota']   # 按序调用，可多个
+```
+
 ## 开发
 
 ```sh

@@ -40,7 +40,7 @@ const KNOWN_REFS = new Set(DIRECT_ADAPTERS.flatMap((a) => [...a.keyRefs, ...a.en
  */
 export function apply(ctx: Context, config: Config): void {
   let scope: SettingsScope<Config> | undefined
-  const quota = new QuotaController(ctx, () => scope, () => ctx.get('credentials'))
+  const quota = new QuotaController(ctx, () => scope, () => ctx.get('credentials'), () => config.mcpPlatforms ?? [])
   registerTools(ctx, quota)
 
   ctx.inject(['settings'], (sctx) => {

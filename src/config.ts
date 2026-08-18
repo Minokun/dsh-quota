@@ -42,6 +42,15 @@ export interface QuotaItem {
 /** How the snapshot was obtained. */
 export type ProviderVia = 'api' | 'mcp'
 
+/** One user-declared MCP platform: quota tools registered elsewhere in DSH. */
+export interface CustomMcpPlatform {
+  /** Unique id; ids colliding with built-in platforms are ignored. */
+  id: string
+  label: string
+  /** MCP tool names called in order (e.g. "mcp__mysite__my_quota"). */
+  tools: string[]
+}
+
 /** One platform row in the panel. */
 export interface ProviderSnapshot {
   id: string
@@ -68,6 +77,8 @@ export interface Config {
   refreshOnBoot: boolean
   /** Periodic refresh interval in minutes; 0 disables it (default 0). */
   refreshIntervalMinutes: number
+  /** Extra user-declared MCP platforms (default []). */
+  mcpPlatforms: CustomMcpPlatform[]
   providers: ProviderSnapshot[]
 }
 
@@ -77,6 +88,11 @@ export const Config: z<Config> = z.object({
   refreshing: z.boolean().default(false),
   refreshOnBoot: z.boolean().default(true),
   refreshIntervalMinutes: z.number().default(0),
+  mcpPlatforms: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    tools: z.array(z.string()),
+  })).default([]),
   providers: z.array(z.object({
     id: z.string(),
     label: z.string(),
