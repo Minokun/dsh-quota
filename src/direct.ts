@@ -165,8 +165,13 @@ const deepseekBalance: FormatParser = (body) => {
   for (const info of infos) {
     const currency = str(info.currency) ?? 'CNY'
     items.push({ label: `${currency} 总余额`, display: str(info.total_balance) ?? '' })
-    items.push({ label: `${currency} 赠金`, display: str(info.granted_balance) ?? '' })
-    items.push({ label: `${currency} 充值`, display: str(info.topped_up_balance) ?? '' })
+    // total = 充值 + 赠金：赠金为 0 时「充值」必然等于「总余额」，拆开只是
+    // 噪音；只有赠金非零才显示构成明细。
+    const granted = num(info.granted_balance) ?? 0
+    if (granted !== 0) {
+      items.push({ label: `${currency} 其中充值`, display: str(info.topped_up_balance) ?? '' })
+      items.push({ label: `${currency} 其中赠金`, display: str(info.granted_balance) ?? '' })
+    }
   }
   if (items.length === 0) items.push({ label: '可用', display: String(raw.is_available ?? '?') })
   return items
