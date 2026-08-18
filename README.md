@@ -23,7 +23,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 | TokenRouter | MCP（`mcp__tokenrouter__*`） | 额度消耗进度 |
 | SupaWriter | MCP（`mcp__supawriter__*`） | 月度文章额度 |
 
-直连平台 key 缺失时显示「未配 Key」；MCP 平台在对应 MCP 服务器未注册时显示「无 MCP」，均不影响其他平台。
+直连平台 key 缺失时显示「未配 Key」；**MCP 平台是纯可选扩展**——它们通过你在 DSH 里另行注册的 `mcp__bigmodel__*` / `mcp__qianwenai__*` / `mcp__scnet__*` / `mcp__tokenrouter__*` / `mcp__supawriter__*` 工具取数（本仓库不包含这些 MCP 服务器）。某个 MCP 没注册时对应平台自动隐藏，注册了就会自动出现，互不干扰。
 
 ## 安装
 

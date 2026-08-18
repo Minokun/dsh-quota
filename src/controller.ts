@@ -148,13 +148,15 @@ export class QuotaController implements QuotaControllerFace {
           }))
 
       const settled = await Promise.allSettled([...directJobs, ...mcpJobs])
+      // MCP platforms are optional extras: hide rows whose MCP server was
+      // never registered instead of spamming "无 MCP" for everyone else.
       const providers = settled.map((s) => (s.status === 'fulfilled' ? s.value : {
         id: 'unknown',
         label: '未知平台',
         status: 'error' as const,
         message: s.reason instanceof Error ? s.reason.message : String(s.reason),
         items: [],
-      }))
+      })).filter((p) => p.status !== 'missing-mcp')
 
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers }
       await this.patch({ refreshedAt: startedAt, refreshing: false, providers })
