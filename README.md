@@ -27,18 +27,13 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 ## 支持的平台
 
-| 平台 | 方式 | 内容 |
-| --- | --- | --- |
-| Kimi Code | 官方 API（`KIMI_CODING_API_KEY`） | 周额度 / 5h 窗口 / 加量包 / 并发 |
-| DeepSeek | 官方 API（`DEEPSEEK_API_KEY`） | 余额、赠金、充值 |
-| 智谱 Coding Plan | 官方 API（`ZAI_CODING_CN_API_KEY`） | 5 小时 token 窗口、调用限流 |
-| 智谱 BigModel | MCP（`mcp__bigmodel__*`） | 账户余额 |
-| 通义千问（百炼） | MCP（`mcp__qianwenai__*`） | Token 套餐、可用金额 |
-| 超算互联网 | MCP（`mcp__scnet__*`） | 充值余额、专项金额 |
-| TokenRouter | MCP（`mcp__tokenrouter__*`） | 额度消耗进度 |
-| SupaWriter | MCP（`mcp__supawriter__*`） | 月度文章额度 |
+**钉住平台**（始终显示，缺 key 时提示）：Kimi Code、DeepSeek、智谱 Coding Plan。
 
-直连平台 key 缺失时显示「未配 Key」；**MCP 平台是纯可选扩展**——它们通过你在 DSH 里另行注册的 `mcp__bigmodel__*` / `mcp__qianwenai__*` / `mcp__scnet__*` / `mcp__tokenrouter__*` / `mcp__supawriter__*` 工具取数（本仓库不包含这些 MCP 服务器）。某个 MCP 没注册时对应平台自动隐藏，注册了就会自动出现，互不干扰。
+**自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go。
+
+**MCP 平台**（纯可选扩展，通过另行注册的 `mcp__*` 工具取数；本仓库不包含这些 MCP 服务器）：智谱 BigModel、通义千问（百炼）、超算互联网、TokenRouter、SupaWriter。没注册时对应平台自动隐藏。
+
+**自定义平台**：有余额 API 的平台（聚合站 / one-api / new-api…）在面板底部「自定义平台」直接添加，或在 config 里声明 `httpPlatforms` / `mcpPlatforms` —— 详见 **[docs/extending.md](docs/extending.md)**（含"如何把网页 Cookie 平台做成 MCP 接入"的完整指南）。
 
 ## 安装
 

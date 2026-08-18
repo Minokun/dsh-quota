@@ -96,4 +96,8 @@ export const PANEL_CSS = `
 }
 .dq-input:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
 .dq-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #777); text-align: center; padding: 2px 0 4px; }
+
+/* Custom-platform section extras (select + ref label). */
+.dq-custom-ref { flex: 1; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-tertiary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+select.dq-input { appearance: auto; cursor: pointer; }
 `

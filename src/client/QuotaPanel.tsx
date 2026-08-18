@@ -185,10 +185,46 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   </div>
                 )
               })}
-              {state.showKeys && (
-                <span className="dq-keys-note">手动保存的 key 存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置。</span>
-              )}
-            </div>
+               {state.showKeys && (
+                 <span className="dq-keys-note">手动保存的 key 存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置。</span>
+               )}
+             </div>
+
+             <div className="dq-keys">
+               <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleCustom() }}>
+                 <span className="dq-keys-caret">{state.showCustom ? '▾' : '▸'}</span>
+                 自定义平台
+                 <span className="dq-keys-hint">聚合站 / one-api / new-api，接口匹配内置格式即可</span>
+               </button>
+               {state.showCustom && (
+                 <>
+                   {state.customPlatforms.map((cp) => (
+                     <div key={cp.id} className="dq-key-row">
+                       <label title={`${cp.endpoint} · ${cp.format}`}>{cp.label}</label>
+                       <span className="dq-custom-ref">{cp.keyRef}</span>
+                       <button type="button" className="dq-btn dq-btn--ghost" disabled={state.savingCustom} onClick={() => { props.removeCustom(cp.id) }}>删</button>
+                     </div>
+                   ))}
+                   <input className="dq-input" placeholder="名称（如 我的聚合站）" value={state.customDraft.label} onChange={(e) => { props.editCustom('label', e.currentTarget.value) }} />
+                   <input className="dq-input" placeholder="接口地址（https://…，openai-billing 填站点根地址）" value={state.customDraft.endpoint} onChange={(e) => { props.editCustom('endpoint', e.currentTarget.value) }} />
+                   <input className="dq-input" placeholder="凭证引用（如 MY_SITE_API_KEY，先存入 DSH 凭证）" value={state.customDraft.keyRef} onChange={(e) => { props.editCustom('keyRef', e.currentTarget.value) }} />
+                   <div className="dq-key-row">
+                     <select className="dq-input" value={state.customDraft.format} onChange={(e) => { props.editCustom('format', e.currentTarget.value) }}>
+                       {(state.formats.length > 0 ? state.formats : ['openai-billing']).map((f) => <option key={f} value={f}>{f}</option>)}
+                     </select>
+                     <button
+                       type="button"
+                       className="dq-btn dq-btn--primary"
+                       disabled={state.savingCustom || !state.customDraft.label.trim() || !state.customDraft.endpoint.trim() || !state.customDraft.keyRef.trim()}
+                       onClick={() => { props.addCustom() }}
+                     >
+                       {state.savingCustom ? '…' : '添加'}
+                     </button>
+                   </div>
+                   <span className="dq-keys-note">key 先写进 DSH 凭证域（如 MY_SITE_API_KEY），这里只填引用名；格式选接口响应对应的解析器。</span>
+                 </>
+               )}
+             </div>
             {state.formError && <div className="dq-provider-msg" style={{ color: '#e74c3c' }}>{state.formError}</div>}
           </div>
           <div className="dq-foot">

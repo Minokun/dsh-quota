@@ -37,6 +37,23 @@ export interface PanelKeyState {
   [platform: string]: { configured: boolean; source?: string; ref?: string; manual?: boolean }
 }
 
+/** One user-declared custom HTTP platform as rendered in the panel. */
+export interface CustomPlatform {
+  id: string
+  label: string
+  endpoint: string
+  keyRef: string
+  format: string
+}
+
+/** Draft of the add-custom-platform form. */
+export interface CustomDraft {
+  label: string
+  endpoint: string
+  keyRef: string
+  format: string
+}
+
 /** What the panel renders. */
 export interface QuotaPanelState {
   /** False until the first status read lands. */
@@ -56,6 +73,16 @@ export interface QuotaPanelState {
   savingKey: string
   /** Manual key section expanded. */
   showKeys: boolean
+  /** User-declared custom HTTP platforms. */
+  customPlatforms: CustomPlatform[]
+  /** Formats the host offers for custom platforms. */
+  formats: string[]
+  /** Custom-platform section expanded. */
+  showCustom: boolean
+  /** Add-platform form draft. */
+  customDraft: CustomDraft
+  /** Add/remove round trip in flight. */
+  savingCustom: boolean
 }
 
 /** The registration-side face the slot entry injects. */
@@ -71,6 +98,10 @@ export interface QuotaPanelFace {
   editKey(platform: string, value: string): void
   saveKey(platform: string): void
   removeKey(platform: string): void
+  toggleCustom(): void
+  editCustom(field: keyof CustomDraft, value: string): void
+  addCustom(): void
+  removeCustom(id: string): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -85,6 +116,11 @@ const INITIAL: QuotaPanelState = {
   drafts: {},
   savingKey: '',
   showKeys: false,
+  customPlatforms: [],
+  formats: [],
+  showCustom: false,
+  customDraft: { label: '', endpoint: '', keyRef: '', format: 'openai-billing' },
+  savingCustom: false,
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -119,22 +155,62 @@ export class QuotaPanelController {
       editKey: (platform, value) => this.patch({ drafts: { ...this.store.getSnapshot().drafts, [platform]: value }, formError: '' }),
       saveKey: (platform) => { void this.saveKey(platform) },
       removeKey: (platform) => { void this.removeKey(platform) },
+      toggleCustom: () => this.patch({ showCustom: !this.store.getSnapshot().showCustom }),
+      editCustom: (field, value) => this.patch({ customDraft: { ...this.store.getSnapshot().customDraft, [field]: value }, formError: '' }),
+      addCustom: () => { void this.addCustom() },
+      removeCustom: (id) => { void this.removeCustom(id) },
     }
   }
 
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[] }>('/status')
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
         refreshedAt: state.refreshedAt,
         providers: state.providers,
         keys: state.keys,
+        customPlatforms: state.httpPlatforms ?? [],
+        formats: state.formats ?? [],
       })
     } catch {
       this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })
+    }
+  }
+
+  /** Add the custom-platform draft as a new provider row. */
+  private async addCustom(): Promise<void> {
+    const draft = this.store.getSnapshot().customDraft
+    if (!draft.label.trim() || !draft.endpoint.trim() || !draft.keyRef.trim()) {
+      this.patch({ formError: '名称、接口地址、凭证引用都要填' })
+      return
+    }
+    // Derive the id from the label: lowercase slug, dash-separated.
+    const id = draft.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'custom'
+    this.patch({ savingCustom: true, formError: '' })
+    try {
+      await request('/platforms', { id, label: draft.label.trim(), endpoint: draft.endpoint.trim(), keyRef: draft.keyRef.trim(), format: draft.format })
+      this.patch({ customDraft: { label: '', endpoint: '', keyRef: '', format: this.store.getSnapshot().customDraft.format } })
+      await this.reload()
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    } finally {
+      this.patch({ savingCustom: false })
+    }
+  }
+
+  /** Remove one custom platform. */
+  private async removeCustom(id: string): Promise<void> {
+    this.patch({ savingCustom: true, formError: '' })
+    try {
+      await request('/platforms/remove', { id })
+      await this.reload()
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    } finally {
+      this.patch({ savingCustom: false })
     }
   }
 

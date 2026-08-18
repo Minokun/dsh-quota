@@ -14,7 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings'
 import { Config, QUOTA_NS } from './config.ts'
 import { QuotaController } from './controller.ts'
-import { DIRECT_ADAPTERS } from './direct.ts'
+import { ALL_DIRECT_REFS } from './direct.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
 
@@ -29,8 +29,8 @@ const BOOT_REFRESH_DELAY_MS = 5000
 /** Debounce for credential-change refreshes (a batch of sets = one refresh). */
 const CREDENTIAL_REFRESH_DEBOUNCE_MS = 800
 
-/** Every credential ref the direct adapters consume. */
-const KNOWN_REFS = new Set(DIRECT_ADAPTERS.flatMap((a) => [...a.keyRefs, ...a.envKeys]))
+/** Every credential ref the built-in direct catalog may consume. */
+const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
 
 /**
  * Mount the plugin: register the refresh tool, persist the snapshot into the
@@ -69,10 +69,12 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
-  // Auto-sync: a key added/changed in DSH (any known ref) refreshes the panel.
+  // Auto-sync: a key added/changed in DSH (any known ref, including custom
+  // platforms' keyRefs) refreshes the panel.
   let pending: ReturnType<typeof setTimeout> | undefined
   ctx.on('credentials/updated', (ref) => {
-    if (!KNOWN_REFS.has(ref as string)) return
+    const custom = quota.state().httpPlatforms.some((p) => p.keyRef === (ref as string))
+    if (!KNOWN_REFS.has(ref as string) && !custom) return
     if (pending !== undefined) clearTimeout(pending)
     pending = setTimeout(() => {
       pending = undefined

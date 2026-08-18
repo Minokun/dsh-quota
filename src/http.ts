@@ -1,9 +1,11 @@
 /**
  * HTTP routes for the browser panel, served under /plugins/dsh-quota/api.
- * GET  /status        — current snapshot + key configuration state
- * POST /refresh       — trigger a refresh (CSRF header required)
- * POST /keys          — store one platform API key into the credentials domain
- * POST /keys/remove   — remove one platform API key
+ * GET  /status            — current snapshot + key state + custom platforms + formats
+ * POST /refresh           — trigger a refresh (CSRF header required)
+ * POST /keys              — store one platform API key into the credentials domain
+ * POST /keys/remove       — remove one platform API key
+ * POST /platforms         — add one user-declared HTTP platform
+ * POST /platforms/remove  — remove one user-declared HTTP platform
  * @module dsh-quota/http
  */
 
@@ -12,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: the ctx.webServer Context merge.
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { QuotaControllerFace } from './controller.ts'
+import { CUSTOM_FORMATS } from './direct.ts'
 
 const API_PREFIX = '/plugins/dsh-quota/api'
 const CSRF_HEADER = 'x-dsh-quota'
@@ -29,7 +32,7 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') {
-      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus() })
+      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS })
     }
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
@@ -50,6 +53,24 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
         if (!platform) return send(res, 400, { error: 'platform 必填' })
         await quota.removeKey(platform)
         return send(res, 200, { ok: true, keys: await quota.keyStatus() })
+      }
+      if (path === '/platforms') {
+        const body = await readJson(req)
+        await quota.addHttpPlatform({
+          id: stringField(body, 'id') ?? '',
+          label: stringField(body, 'label') ?? '',
+          endpoint: stringField(body, 'endpoint') ?? '',
+          keyRef: stringField(body, 'keyRef') ?? '',
+          format: stringField(body, 'format') ?? '',
+        })
+        return send(res, 200, { ok: true, httpPlatforms: quota.state().httpPlatforms })
+      }
+      if (path === '/platforms/remove') {
+        const body = await readJson(req)
+        const id = stringField(body, 'id')
+        if (!id) return send(res, 400, { error: 'id 必填' })
+        await quota.removeHttpPlatform(id)
+        return send(res, 200, { ok: true, httpPlatforms: quota.state().httpPlatforms })
       }
     }
     send(res, 404, { error: 'unknown route' })

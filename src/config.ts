@@ -51,6 +51,23 @@ export interface CustomMcpPlatform {
   tools: string[]
 }
 
+/**
+ * One user-declared direct-HTTP platform (aggregator, one-api/new-api site,
+ * or any provider whose balance endpoint matches a built-in format). Addable
+ * from the panel UI or the composition config; persisted in the namespace.
+ */
+export interface CustomHttpPlatform {
+  /** ^[a-z0-9-]+$; collisions with built-in catalog ids are ignored. */
+  id: string
+  label: string
+  /** Balance endpoint URL (https). For openai-billing: the aggregator base URL. */
+  endpoint: string
+  /** Credential reference (UPPER_SNAKE) holding this platform's API key. */
+  keyRef: string
+  /** One of direct.FORMATS / CUSTOM_FORMATS. */
+  format: string
+}
+
 /** One platform row in the panel. */
 export interface ProviderSnapshot {
   id: string
@@ -79,6 +96,8 @@ export interface Config {
   refreshIntervalMinutes: number
   /** Extra user-declared MCP platforms (default []). */
   mcpPlatforms: CustomMcpPlatform[]
+  /** Extra user-declared direct-HTTP platforms (default []). */
+  httpPlatforms: CustomHttpPlatform[]
   providers: ProviderSnapshot[]
 }
 
@@ -92,6 +111,13 @@ export const Config: z<Config> = z.object({
     id: z.string(),
     label: z.string(),
     tools: z.array(z.string()),
+  })).default([]),
+  httpPlatforms: z.array(z.object({
+    id: z.string(),
+    label: z.string(),
+    endpoint: z.string(),
+    keyRef: z.string(),
+    format: z.string(),
   })).default([]),
   providers: z.array(z.object({
     id: z.string(),

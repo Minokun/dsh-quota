@@ -12,9 +12,9 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { Config, CustomMcpPlatform, ProviderSnapshot } from './config.ts'
+import type { Config, CustomHttpPlatform, CustomMcpPlatform, ProviderSnapshot } from './config.ts'
 import { KEY_REFS } from './config.ts'
-import { DIRECT_ADAPTERS } from './direct.ts'
+import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
@@ -61,6 +61,10 @@ export interface QuotaControllerFace {
   removeKey(platform: string): Promise<void>
   /** Describe configured keys (never the values): which ref supplies each platform. */
   keyStatus(): Promise<Record<string, { configured: boolean; source?: string; ref?: string; manual?: boolean }>>
+  /** Add one user-declared HTTP platform (persisted in the namespace). */
+  addHttpPlatform(platform: CustomHttpPlatform): Promise<void>
+  /** Remove one user-declared HTTP platform by id. */
+  removeHttpPlatform(id: string): Promise<void>
 }
 
 export class QuotaController implements QuotaControllerFace {
@@ -87,7 +91,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -105,9 +109,10 @@ export class QuotaController implements QuotaControllerFace {
       const credentials = this.getCredentials()
       const tools = this.ctx.get('tools')
 
-      const directJobs = DIRECT_ADAPTERS.map(async (adapter): Promise<ProviderSnapshot> => {
+      const runDirect = async (adapter: DirectAdapter, pinned: boolean): Promise<ProviderSnapshot | null> => {
         const key = await resolveKey(credentials, adapter.keyRefs, adapter.envKeys)
         if (!key) {
+          if (!pinned) return null // auto-discovered rows stay hidden without a key
           return {
             id: adapter.id,
             label: adapter.label,
@@ -132,7 +137,26 @@ export class QuotaController implements QuotaControllerFace {
             items: [],
           }
         }
-      })
+      }
+
+      // User-declared HTTP platforms from the namespace (panel-added) merged
+      // over the composition config; built-in catalog ids win over customs.
+      const builtinIds = new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].map((a) => a.id))
+      const customHttp = this.state().httpPlatforms
+        .filter((p) => !builtinIds.has(p.id))
+        .map((p): DirectAdapter => ({
+          id: p.id,
+          label: p.label,
+          keyRefs: [p.keyRef],
+          envKeys: [p.keyRef],
+          fetch: customHttpFetch(p),
+        }))
+
+      const directJobs = [
+        ...DIRECT_ADAPTERS.map((a) => runDirect(a, true)),
+        ...CATALOG_EXTRA.map((a) => runDirect(a, false)),
+        ...customHttp.map((a) => runDirect(a, true)),
+      ]
 
       const mcpJobs = tools
         ? this.mcpAdapters().map(async (adapter) => {
@@ -159,15 +183,17 @@ export class QuotaController implements QuotaControllerFace {
           }))
 
       const settled = await Promise.allSettled([...directJobs, ...mcpJobs])
-      // MCP platforms are optional extras: hide rows whose MCP server was
-      // never registered instead of spamming "无 MCP" for everyone else.
-      const providers = settled.map((s) => (s.status === 'fulfilled' ? s.value : {
-        id: 'unknown',
-        label: '未知平台',
-        status: 'error' as const,
-        message: s.reason instanceof Error ? s.reason.message : String(s.reason),
-        items: [],
-      })).filter((p) => p.status !== 'missing-mcp')
+      // Optional rows stay hidden: unregistered MCP servers and undiscovered
+      // catalog platforms (null) never reach the panel.
+      const providers = settled
+        .map((s) => (s.status === 'fulfilled' ? s.value : {
+          id: 'unknown',
+          label: '未知平台',
+          status: 'error' as const,
+          message: s.reason instanceof Error ? s.reason.message : String(s.reason),
+          items: [],
+        }))
+        .filter((p): p is ProviderSnapshot => p !== null && p.status !== 'missing-mcp')
 
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers }
       await this.patch({ refreshedAt: startedAt, refreshing: false, providers })
@@ -197,6 +223,33 @@ export class QuotaController implements QuotaControllerFace {
     const credentials = this.getCredentials()
     if (!credentials) return
     await credentials.unset(credentialRef(ref))
+  }
+
+  /** Validate and persist one user-declared HTTP platform. */
+  async addHttpPlatform(platform: CustomHttpPlatform): Promise<void> {
+    const id = (platform.id ?? '').trim()
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error('id 只能含小写字母、数字、连字符')
+    const label = (platform.label ?? '').trim()
+    if (!label) throw new Error('名称不能为空')
+    const endpoint = (platform.endpoint ?? '').trim()
+    if (!/^https:\/\/.+/.test(endpoint)) throw new Error('接口地址必须是 https URL')
+    const keyRef = (platform.keyRef ?? '').trim()
+    if (!/^[A-Z][A-Z0-9_]*$/.test(keyRef)) throw new Error('凭证引用必须是大写下划线命名（如 MY_PLATFORM_API_KEY）')
+    const format = (platform.format ?? '').trim()
+    if (format !== 'openai-billing' && !FORMATS[format]) throw new Error(`未知格式：${format}`)
+    if (!(CUSTOM_FORMATS as readonly string[]).includes(format)) throw new Error(`格式 ${format} 不适用于自定义平台`)
+    const builtinIds = new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].map((a) => a.id))
+    if (builtinIds.has(id)) throw new Error(`id ${id} 与内置平台重复`)
+    const current = this.state().httpPlatforms
+    if (current.some((p) => p.id === id)) throw new Error(`id ${id} 已存在`)
+    await this.patch({ httpPlatforms: [...current, { id, label, endpoint, keyRef, format }] })
+    await this.refresh()
+  }
+
+  /** Remove one user-declared HTTP platform by id. */
+  async removeHttpPlatform(id: string): Promise<void> {
+    await this.patch({ httpPlatforms: this.state().httpPlatforms.filter((p) => p.id !== id) })
+    await this.refresh()
   }
 
   /** Describe configured keys (never the values): which ref supplies each platform. */
