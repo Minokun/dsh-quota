@@ -1,0 +1,233 @@
+/**
+ * Panel controller: bridges the plugin's HTTP API (same-origin routes under
+ * /plugins/dsh-quota/api) onto the snapshot store; also owns the key-entry
+ * drafts for the three direct platforms.
+ * @module dsh-quota/client/controller
+ */
+
+import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+
+/** One item row as rendered by the panel. */
+export interface PanelItem {
+  label: string
+  used?: number
+  limit?: number
+  remaining?: number
+  percent?: number
+  resetAt?: string
+  display?: string
+}
+
+/** One platform row as rendered by the panel. */
+export interface PanelProvider {
+  id: string
+  label: string
+  status: 'ok' | 'error' | 'missing-key' | 'missing-mcp'
+  message?: string
+  via?: 'api' | 'mcp'
+  /** Credential ref that supplied the key (never the value). */
+  keyRef?: string
+  /** Source layer of the resolved key. */
+  keySource?: string
+  items: PanelItem[]
+}
+
+/** Key configuration state (never values). */
+export interface PanelKeyState {
+  [platform: string]: { configured: boolean; source?: string; ref?: string; manual?: boolean }
+}
+
+/** What the panel renders. */
+export interface QuotaPanelState {
+  /** False until the first status read lands. */
+  loaded: boolean
+  /** True while a refresh round trip is in flight. */
+  busy: boolean
+  /** Panel open. */
+  open: boolean
+  refreshedAt: string
+  providers: PanelProvider[]
+  keys: PanelKeyState
+  /** Local form error. */
+  formError: string
+  /** Key drafts, one input per direct platform. */
+  drafts: Record<string, string>
+  /** Key save in flight. */
+  savingKey: string
+  /** Manual key section expanded. */
+  showKeys: boolean
+}
+
+/** The registration-side face the slot entry injects. */
+export interface QuotaPanelFace {
+  hooks: {
+    /** Panel snapshot bound by the renderer as useQuotaPanel. */
+    quotaPanel: SnapshotStore<QuotaPanelState>
+  }
+  toggle(): void
+  close(): void
+  refresh(): void
+  toggleKeys(): void
+  editKey(platform: string, value: string): void
+  saveKey(platform: string): void
+  removeKey(platform: string): void
+}
+
+/** Initial snapshot before the first status read. */
+const INITIAL: QuotaPanelState = {
+  loaded: false,
+  busy: false,
+  open: false,
+  refreshedAt: '',
+  providers: [],
+  keys: {},
+  formError: '',
+  drafts: {},
+  savingKey: '',
+  showKeys: false,
+}
+
+const API_PREFIX = '/plugins/dsh-quota/api'
+
+/** Opening the panel auto-refreshes when the snapshot is older than this. */
+const AUTO_REFRESH_STALE_MS = 5 * 60 * 1000
+
+/** Drives the panel off the plugin's HTTP API. */
+export class QuotaPanelController {
+  private readonly store: SnapshotStore<QuotaPanelState>
+
+  constructor() {
+    this.store = createSnapshotStore<QuotaPanelState>(INITIAL)
+    void this.reload()
+  }
+
+  /** Build the face the slot registration injects. */
+  inject(): QuotaPanelFace {
+    return {
+      hooks: { quotaPanel: this.store },
+      toggle: () => {
+        const next = !this.store.getSnapshot().open
+        this.patch({ open: next })
+        // Show the stored snapshot immediately, then refresh in the
+        // background when it is stale — the panel never blocks on the
+        // multi-platform round trip.
+        if (next) void this.reload().then(() => this.refreshIfStale())
+      },
+      close: () => this.patch({ open: false }),
+      refresh: () => { void this.refresh() },
+      toggleKeys: () => this.patch({ showKeys: !this.store.getSnapshot().showKeys }),
+      editKey: (platform, value) => this.patch({ drafts: { ...this.store.getSnapshot().drafts, [platform]: value }, formError: '' }),
+      saveKey: (platform) => { void this.saveKey(platform) },
+      removeKey: (platform) => { void this.removeKey(platform) },
+    }
+  }
+
+  /** Read the snapshot (initial load, opening the panel). */
+  private async reload(): Promise<void> {
+    try {
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState }>('/status')
+      this.store.set({
+        ...this.store.getSnapshot(),
+        loaded: true,
+        refreshedAt: state.refreshedAt,
+        providers: state.providers,
+        keys: state.keys,
+      })
+    } catch {
+      this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })
+    }
+  }
+
+  /** Refresh when the stored snapshot is stale (called after opening the panel). */
+  private async refreshIfStale(): Promise<void> {
+    const { refreshedAt, busy } = this.store.getSnapshot()
+    if (busy) return
+    const age = refreshedAt ? Date.now() - new Date(refreshedAt).getTime() : Number.POSITIVE_INFINITY
+    if (Number.isNaN(age) || age > AUTO_REFRESH_STALE_MS) await this.refresh()
+  }
+
+  /** Ask the Host to refresh every platform snapshot. */
+  private async refresh(): Promise<void> {    await this.roundTrip(async () => {
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[] }>('/refresh', {})
+      this.store.set({
+        ...this.store.getSnapshot(),
+        refreshedAt: state.refreshedAt,
+        providers: state.providers,
+      })
+    })
+  }
+
+  /** Store one platform key via the host credentials domain. */
+  private async saveKey(platform: string): Promise<void> {
+    const key = this.store.getSnapshot().drafts[platform] ?? ''
+    if (!key.trim()) {
+      this.patch({ formError: 'key 不能为空' })
+      return
+    }
+    await this.keyRoundTrip(platform, async () => {
+      const result = await request<{ keys: PanelKeyState }>('/keys', { platform, key })
+      this.patch({
+        keys: result.keys,
+        drafts: { ...this.store.getSnapshot().drafts, [platform]: '' },
+      })
+      await this.refresh()
+    })
+  }
+
+  /** Remove one platform key via the host credentials domain. */
+  private async removeKey(platform: string): Promise<void> {
+    await this.keyRoundTrip(platform, async () => {
+      const result = await request<{ keys: PanelKeyState }>('/keys/remove', { platform })
+      this.patch({ keys: result.keys })
+      await this.refresh()
+    })
+  }
+
+  /** Run one refresh round trip with the busy flag bracketing it. */
+  private async roundTrip(operation: () => Promise<void>): Promise<void> {
+    this.patch({ busy: true, formError: '' })
+    try {
+      await operation()
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    } finally {
+      this.patch({ busy: false })
+    }
+  }
+
+  /** Run one key round trip with the savingKey flag bracketing it. */
+  private async keyRoundTrip(platform: string, operation: () => Promise<void>): Promise<void> {
+    this.patch({ savingKey: platform, formError: '' })
+    try {
+      await operation()
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    } finally {
+      this.patch({ savingKey: '' })
+    }
+  }
+
+  /** Merge a local patch into the snapshot. */
+  private patch(patch: Partial<QuotaPanelState>): void {
+    this.store.set({ ...this.store.getSnapshot(), ...patch })
+  }
+}
+
+/** Same-origin JSON call against the plugin API; POSTs carry the CSRF header. */
+async function request<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`${API_PREFIX}${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    ...body !== undefined
+      ? {
+        headers: { 'content-type': 'application/json', 'x-dsh-quota': '1' },
+        body: JSON.stringify(body),
+      }
+      : {},
+  })
+  if (!response.ok) throw new Error(`插件请求失败（HTTP ${String(response.status)}）`)
+  const data = await response.json() as T & { statusMessage?: string }
+  if (body !== undefined && (data as { statusMessage?: string }).statusMessage) {
+    throw new Error((data as { statusMessage: string }).statusMessage)
+  }
+  return data
+}

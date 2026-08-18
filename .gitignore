@@ -1,0 +1,5 @@
+node_modules/
+lib/
+.gstack/
+*.log
+.DS_Store

@@ -1,0 +1,13 @@
+# The dsh-quota bundle patch: mounts the quota plugin (host tools + HTTP API +
+# shell.overlay bottom-right pill and panel) alongside the profile's bundles.
+#
+# Optional composition config (settings namespace `quota`), e.g.:
+#
+# - id: quota
+#   config:
+#     refreshOnBoot: true
+#     refreshIntervalMinutes: 30
+
+- insert:
+    - id: quota
+      name: 'dsh-quota'

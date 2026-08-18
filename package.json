@@ -1,0 +1,66 @@
+{
+  "name": "dsh-quota",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: a bottom-right membership-quota pill with a panel showing each AI platform's plan quota. Queries Kimi / DeepSeek / Zhipu directly via official APIs with API keys from the DSH credentials domain, and falls back to registered MCP tools for Qianwen / Scnet / TokenRouter / SupaWriter.",
+  "license": "MIT",
+  "author": "Minokun",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Minokun/dsh-quota.git"
+  },
+  "homepage": "https://github.com/Minokun/dsh-quota#readme",
+  "bugs": "https://github.com/Minokun/dsh-quota/issues",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "immediately": true
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown && node scripts/check-client-id.mjs",
+    "prepare": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "link-harness": "sh scripts/link-harness.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "0.22.2",
+    "typescript": "6.0.3",
+    "unrun": "^0.3.1"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "quota",
+    "kimi",
+    "deepseek",
+    "bigmodel"
+  ],
+  "packageManager": "pnpm@11.7.0+sha512.19cc852c120c7125760f2443ee6be0ca5b40f9f50598de1a09a1f177503e010e57c23c77646e01e761de59bf874fb22a3398c33ab9691fc13eb946b6f0f4d620"
+}
