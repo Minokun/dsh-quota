@@ -85,9 +85,15 @@ export function QuotaPanel(props: QuotaPanelProps) {
   useEffect(() => {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
-  const sessionSummary = state.sessionModel
-    ? summarizeItems(state.providers.find((p) => p.id === platformForProvider(state.sessionModel!.provider)))
-    : ''
+  // 先按 apiKeyEnv 精确对应（同平台多号也准），再退回名称模糊匹配。
+  const sessionSummary = (() => {
+    if (!state.sessionModel) return ''
+    const ref = state.providerKeyRefs[state.sessionModel.provider]
+    const platformId = platformForProvider(state.sessionModel.provider)
+    const row = (ref ? state.providers.find((p) => p.keyRef === ref) : undefined)
+      ?? state.providers.find((p) => p.id === platformId || p.id.startsWith(`${platformId}#`))
+    return summarizeItems(row)
+  })()
   const summary = sessionSummary || state.currentModel.summary
   const modelFrom = state.sessionModel
     ? `会话模型 ${state.sessionModel.provider}/${state.sessionModel.model}`

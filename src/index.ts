@@ -54,6 +54,19 @@ export function apply(ctx: Context, config: Config): void {
         ? { provider: v.provider, model: v.model }
         : undefined
     },
+    () => {
+      // llm-pi-ai namespace: providers.<id>.apiKeyEnv — lets the panel match a
+      // session's model provider to the exact credential ref (two accounts on
+      // one platform stay distinct).
+      const d = settingsSvc?.describe?.().find((x) => x.ns === 'llm-pi-ai')
+      const providers = (d?.value as { providers?: Record<string, { apiKeyEnv?: unknown }> } | undefined)?.providers
+      if (!providers || typeof providers !== 'object') return {}
+      const out: Record<string, string> = {}
+      for (const [id, p] of Object.entries(providers)) {
+        if (typeof p?.apiKeyEnv === 'string' && p.apiKeyEnv) out[id] = p.apiKeyEnv
+      }
+      return out
+    },
   )
   registerTools(ctx, quota)
 

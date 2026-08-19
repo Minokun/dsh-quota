@@ -154,13 +154,15 @@ export class QuotaController implements QuotaControllerFace {
   private readonly getCredentials: () => CredentialProvider | undefined
   private readonly getCustomPlatforms: () => CustomMcpPlatform[]
   private readonly getDefaultModel: () => DefaultModelSelection | undefined
+  private readonly getProviderKeyRefs: () => Record<string, string>
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined) {
+  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviderKeyRefs: () => Record<string, string> = () => ({})) {
     this.ctx = ctx
     this.getScope = getScope
     this.getCredentials = getCredentials
     this.getCustomPlatforms = getCustomPlatforms
     this.getDefaultModel = getDefaultModel
+    this.getProviderKeyRefs = getProviderKeyRefs
   }
 
   /** Built-in MCP adapters plus user-declared ones (id collisions ignored). */
@@ -174,7 +176,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], currentModel: EMPTY_CURRENT_MODEL, providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], providerKeyRefs: {}, currentModel: EMPTY_CURRENT_MODEL, providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -211,34 +213,48 @@ export class QuotaController implements QuotaControllerFace {
       const credentials = this.getCredentials()
       const tools = this.ctx.get('tools')
 
-      const runDirect = async (adapter: DirectAdapter, pinned: boolean): Promise<ProviderSnapshot | null> => {
-        const key = await resolveKey(credentials, adapter.keyRefs, adapter.envKeys)
-        if (!key) {
-          if (!pinned) return null // auto-discovered rows stay hidden without a key
-          return {
+      // One ROW PER RESOLVED REF: two accounts on the same platform (e.g.
+      // ZAI_CODING_CN_API_KEY + ZHIPU_API_KEY) render as two cards, and the
+      // model→platform correspondence can key on the exact ref.
+      const runDirect = async (adapter: DirectAdapter, pinned: boolean): Promise<ProviderSnapshot[]> => {
+        const keys: ResolvedKey[] = []
+        const seen = new Set<string>()
+        for (const ref of [...adapter.keyRefs, ...adapter.envKeys]) {
+          if (seen.has(ref)) continue
+          seen.add(ref)
+          const key = await resolveKey(credentials, [ref], [ref])
+          if (key) keys.push(key)
+        }
+        if (keys.length === 0) {
+          if (!pinned) return [] // auto-discovered rows stay hidden without a key
+          return [{
             id: adapter.id,
             label: adapter.label,
             status: 'missing-key',
             message: '未找到 API key（DSH 凭证与环境变量均无）',
             via: 'api',
             items: [],
-          }
+          }]
         }
-        try {
-          const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
-          return { ...snapshot, keyRef: key.ref, keySource: key.source }
-        } catch (error) {
-          return {
-            id: adapter.id,
-            label: adapter.label,
-            status: 'error',
-            message: error instanceof Error ? error.message : String(error),
-            via: 'api',
-            keyRef: key.ref,
-            keySource: key.source,
-            items: [],
+        const multi = keys.length > 1
+        return Promise.all(keys.map(async (key): Promise<ProviderSnapshot> => {
+          const id = multi ? `${adapter.id}#${key.ref}` : adapter.id
+          try {
+            const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+            return { ...snapshot, id, keyRef: key.ref, keySource: key.source }
+          } catch (error) {
+            return {
+              id,
+              label: adapter.label,
+              status: 'error',
+              message: error instanceof Error ? error.message : String(error),
+              via: 'api',
+              keyRef: key.ref,
+              keySource: key.source,
+              items: [],
+            }
           }
-        }
+        }))
       }
 
       const customHttp = this.customHttpAdapters()
@@ -264,7 +280,7 @@ export class QuotaController implements QuotaControllerFace {
               }
             }
           })
-        : this.mcpAdapters().map((adapter): ProviderSnapshot => ({
+        : this.mcpAdapters().map(async (adapter): Promise<ProviderSnapshot> => ({
             id: adapter.id,
             label: adapter.label,
             status: 'missing-mcp',
@@ -273,30 +289,42 @@ export class QuotaController implements QuotaControllerFace {
             items: [],
           }))
 
-      const settled = await Promise.allSettled([...directJobs, ...mcpJobs])
-      // Optional rows stay hidden: unregistered MCP servers and undiscovered
-      // catalog platforms (null) never reach the panel.
+      const jobs: Array<Promise<ProviderSnapshot | ProviderSnapshot[]>> = [...directJobs, ...mcpJobs]
+      const settled = await Promise.allSettled(jobs)
+      // Optional rows stay hidden: unregistered MCP servers never reach the
+      // panel; direct jobs yield one row PER RESOLVED REF (multi-account).
       const providers = settled
-        .map((s) => (s.status === 'fulfilled' ? s.value : {
-          id: 'unknown',
-          label: '未知平台',
-          status: 'error' as const,
-          message: s.reason instanceof Error ? s.reason.message : String(s.reason),
-          items: [],
-        }))
-        .filter((p): p is ProviderSnapshot => p !== null && p.status !== 'missing-mcp')
+        .flatMap((s) => {
+          if (s.status !== 'fulfilled') {
+            return [{
+              id: 'unknown',
+              label: '未知平台',
+              status: 'error' as const,
+              message: s.reason instanceof Error ? s.reason.message : String(s.reason),
+              items: [],
+            }]
+          }
+          return Array.isArray(s.value) ? s.value : [s.value]
+        })
+        .filter((p) => p.status !== 'missing-mcp')
 
-      // DSH 当前默认模型 → 匹配面板平台 → 一句话额度摘要（pill 展示）。
+      // DSH 模型供应商 id → apiKeyEnv（供 pill 精确对应平台卡片）。
+      const providerKeyRefs = this.getProviderKeyRefs()
+
+      // DSH 当前默认模型 → 先按 apiKeyEnv 精确对应卡片（同平台多号也准），
+      // 再退回到名称模糊匹配 → 一句话额度摘要（pill 展示）。
       const dm = this.getDefaultModel()
       let currentModel = EMPTY_CURRENT_MODEL
       if (dm?.provider) {
         const platform = platformForProvider(dm.provider)
-        const row = platform ? providers.find((p) => p.id === platform) : undefined
-        currentModel = { provider: dm.provider, model: dm.model, platform, summary: row ? summarize(row) : '' }
+        const ref = providerKeyRefs[dm.provider]
+        const row = (ref ? providers.find((p) => p.keyRef === ref) : undefined)
+          ?? (platform ? providers.find((p) => p.id === platform || p.id.startsWith(`${platform}#`)) : undefined)
+        currentModel = { provider: dm.provider, model: dm.model, platform: row?.id ?? platform, summary: row ? summarize(row) : '' }
       }
 
-      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel }
-      await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel })
+      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs }
+      await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs })
       return state
     } catch (error) {
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false }

@@ -117,6 +117,8 @@ export interface Config {
   httpPlatforms: CustomHttpPlatform[]
   /** Login flows by platform id (composition-level; overrides built-in URLs). */
   loginFlows: LoginFlow[]
+  /** DSH 模型供应商 id → 其 apiKeyEnv 凭证引用（当前模型与平台卡片按引用精确对应）。 */
+  providerKeyRefs: Record<string, string>
   /** DSH 当前默认模型及其额度摘要（pill 展示；取不到时字段为空）。 */
   currentModel: {
     /** 模型供应商 id，如 kimi-coding。 */
@@ -158,6 +160,7 @@ export const Config: z<Config> = z.object({
     debugChrome: z.boolean(),
     afterLogin: z.string(),
   })).default([]),
+  providerKeyRefs: z.dict(z.string()).default({}),
   currentModel: z.object({
     provider: z.string().default(''),
     model: z.string().default(''),
