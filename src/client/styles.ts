@@ -24,7 +24,7 @@ export const PANEL_CSS = `
 .dq-dot--idle { background: #888; }
 .dq-pill .dq-pill-name { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dq-pill .dq-pill-model {
-  font-size: 11px; font-weight: 600; max-width: 150px;
+  font-size: 11px; font-weight: 600; max-width: 210px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   padding: 1px 8px; border-radius: 999px;
   background: rgba(91, 108, 255, 0.14); color: var(--dsw-alias-brand-primary, #5b6cff);

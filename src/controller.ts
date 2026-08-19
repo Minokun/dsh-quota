@@ -77,20 +77,35 @@ function platformForProvider(provider: string): string {
   return ''
 }
 
-/** One-line quota summary for the pill: bare value with its symbol (剩xx% / ¥xx / $xx). */
+/** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周, "300m 窗口"→300m. */
+function shortTag(label: string): string {
+  if (/5\s*小时/.test(label)) return '5h'
+  const m = label.match(/(\d+)\s*m\b/)
+  if (m) return `${m[1]}m`
+  if (/本周|周/.test(label)) return '周'
+  if (/月/.test(label)) return '月'
+  return ''
+}
+
+/** One-line quota summary for the pill: up to two headline windows joined by " · ". */
 function summarize(snapshot: ProviderSnapshot): string {
   if (snapshot.status !== 'ok') return ''
   const head = (item: QuotaItem): string | undefined => {
     // 百分比优先（带 %），其次货币/文本 display（自带符号），最后裸计数。
-    if (item.percent !== undefined) return `剩${Math.max(0, Math.round(100 - item.percent))}%`
-    if (item.display) return item.display
-    if (item.remaining !== undefined) return `剩${item.remaining}`
-    return undefined
+    const value = item.percent !== undefined
+      ? `剩${Math.max(0, Math.round(100 - item.percent))}%`
+      : item.display ?? (item.remaining !== undefined ? `剩${item.remaining}` : undefined)
+    if (value === undefined) return undefined
+    const tag = shortTag(item.label)
+    return tag ? `${tag} ${value}` : value
   }
-  // Prefer the window/balance headlines over detail rows.
-  const priority = snapshot.items.find((i) => /周额度|小时窗口|总余额|余额|额度/.test(i.label))
-  const first = priority ?? snapshot.items[0]
-  return first ? head(first) ?? '' : ''
+  // Coding Plan 有多个窗口（5h/周…）时都显示，最多两条。
+  const headlines = snapshot.items.filter((i) => /窗口|周|余额|额度/.test(i.label))
+  const parts = (headlines.length > 0 ? headlines : snapshot.items)
+    .map(head)
+    .filter((v): v is string => Boolean(v))
+    .slice(0, 2)
+  return parts.join(' · ')
 }
 
 /** One resolved API key and where it came from. */

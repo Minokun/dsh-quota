@@ -1,6 +1,6 @@
 {
   "name": "dsh-quota",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "DeepSeek Harness plugin: a bottom-right membership-quota pill with a panel showing each AI platform's plan quota. Queries Kimi / DeepSeek / Zhipu directly via official APIs with API keys from the DSH credentials domain, and falls back to registered MCP tools for Qianwen / Scnet / TokenRouter / SupaWriter.",
   "license": "MIT",
   "author": "Minokun",
