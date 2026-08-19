@@ -22,7 +22,6 @@ export const PANEL_CSS = `
 .dq-dot--warn { background: #f5a623; box-shadow: 0 0 6px rgba(245, 166, 35, 0.7); }
 .dq-dot--err { background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.7); }
 .dq-dot--idle { background: #888; }
-.dq-pill .dq-pill-time { font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
 .dq-pill .dq-pill-model {
   font-size: 11px; font-weight: 600; max-width: 150px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

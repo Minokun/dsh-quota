@@ -65,16 +65,6 @@ function fillClass(percent: number): string {
   return 'dq-item-fill--ok'
 }
 
-/** Short time label for the pill. */
-function shortTime(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
-}
-
 /** Compact reset label, e.g. "8/21 08:23 重置". */
 function resetText(iso?: string): string {
   if (!iso) return ''
@@ -243,7 +233,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
         <span className={`dq-dot ${dotClass(state)}`} />
         <span>会员额度</span>
         {state.currentModel.summary && <span className="dq-pill-model">{state.currentModel.summary}</span>}
-        {state.refreshedAt && <span className="dq-pill-time">{shortTime(state.refreshedAt)}</span>}
       </button>
     </div>
   )
