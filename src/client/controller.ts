@@ -134,6 +134,8 @@ export interface QuotaPanelState {
   loginFlows: Record<string, string>
   /** 已点过「去登录」、等待用户确认的平台 id。 */
   loginPending: string
+  /** Key 管理覆盖的直连平台（host 下发）。 */
+  keyPlatforms: Array<{ id: string; label: string }>
 }
 
 /** The registration-side face the slot entry injects. */
@@ -182,6 +184,7 @@ const INITIAL: QuotaPanelState = {
   sessionModel: null,
   loginFlows: {},
   loginPending: '',
+  keyPlatforms: [],
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -268,7 +271,7 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string> }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }> }>('/status')
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -278,6 +281,7 @@ export class QuotaPanelController {
         customPlatforms: state.httpPlatforms ?? [],
         formats: state.formats ?? [],
         loginFlows: state.loginFlows ?? {},
+        keyPlatforms: state.keyPlatforms ?? [],
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
     } catch {

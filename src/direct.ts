@@ -263,6 +263,56 @@ const opencodeUsage: FormatParser = (body) => {
   return [pick('rolling', '5h 窗口'), pick('weekly', '本周窗口'), pick('monthly', '本月窗口')]
 }
 
+/** DeepInfra: prepaid funds come back as a NEGATIVE stripe_balance. */
+const deepinfraBilling: FormatParser = (body) => {
+  const raw = body as Record<string, unknown>
+  const stripeBalance = num(raw.stripe_balance)
+  if (stripeBalance === undefined) throw new Error('missing stripe_balance')
+  const items: QuotaItem[] = []
+  // negative = 预付余额（转正显示）；positive = 欠费
+  if (stripeBalance < 0) items.push({ label: '预付余额', display: `$${(-stripeBalance).toFixed(2)}` })
+  else if (stripeBalance > 0) items.push({ label: '待付欠费', display: `$${stripeBalance.toFixed(2)}` })
+  else items.push({ label: '预付余额', display: '$0.00' })
+  const limit = num(raw.spending_limit ?? raw.spend_limit)
+  if (limit !== undefined && limit > 0) items.push({ label: '消费上限', display: `$${limit}` })
+  if (raw.suspended === true) items.push({ label: '状态', display: `已暂停${str(raw.suspension_reason) ? `：${str(raw.suspension_reason)}` : ''}` })
+  return items
+}
+
+/** Venice: DIEM（平台积分）与 USD 双余额。 */
+const veniceBalance: FormatParser = (body) => {
+  const raw = body as Record<string, unknown>
+  const data = (raw.data ?? raw) as Record<string, unknown>
+  const items: QuotaItem[] = []
+  const diem = num(data.diem ?? data.DIEM ?? (data.balances as Record<string, unknown> | undefined)?.diem)
+  const usd = num(data.usd ?? data.USD ?? (data.balances as Record<string, unknown> | undefined)?.usd)
+  if (usd !== undefined) items.push({ label: 'USD 余额', display: `$${usd.toFixed(2)}` })
+  if (diem !== undefined) items.push({ label: 'DIEM 余额', display: String(diem) })
+  if (items.length === 0) throw new Error('missing usd/diem balance')
+  return items
+}
+
+/** NeuralWatt: 订阅 kWh 用量窗口 + 预付 USD 余额。 */
+const neuralwattQuota: FormatParser = (body) => {
+  const raw = body as Record<string, unknown>
+  const data = (raw.data ?? raw) as Record<string, unknown>
+  const items: QuotaItem[] = []
+  const used = num(data.kwh_used)
+  const included = num(data.kwh_included)
+  if (used !== undefined && included !== undefined && included > 0) {
+    items.push({ label: '订阅 kWh', used, limit: included, remaining: included - used, percent: pct(used, included) })
+  }
+  const prepaid = num(data.prepaid_usd ?? data.credit_balance_usd ?? data.balance_usd)
+  if (prepaid !== undefined) items.push({ label: '预付余额', display: `$${prepaid.toFixed(2)}` })
+  const spent = num(data.spent_usd)
+  const keyLimit = num(data.limit_usd)
+  if (spent !== undefined && keyLimit !== undefined && keyLimit > 0) {
+    items.push({ label: '本 key 消费', used: spent, limit: keyLimit, remaining: keyLimit - spent, percent: pct(spent, keyLimit) })
+  }
+  if (items.length === 0) throw new Error('missing quota fields')
+  return items
+}
+
 /** Quota formats reusable by catalog entries and user-declared platforms. */
 export const FORMATS: Record<string, FormatParser> = {
   'kimi-coding': kimiCoding,
@@ -275,6 +325,9 @@ export const FORMATS: Record<string, FormatParser> = {
   'xai-credits': xaiCredits,
   'minimax-remains': minimaxRemains,
   'opencode-usage': opencodeUsage,
+  'deepinfra-billing': deepinfraBilling,
+  'venice-balance': veniceBalance,
+  'neuralwatt-quota': neuralwattQuota,
 }
 
 /** Formats offered in the panel for user-declared custom HTTP platforms. */
@@ -351,6 +404,9 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
   entry({ id: 'stepfun', label: 'StepFun', keyRefs: ['STEP_API_KEY', 'STEPFUN_API_KEY'], endpoint: 'https://api.stepfun.com/v1/accounts', format: 'stepfun-accounts' }),
   entry({ id: 'xai', label: 'xAI', keyRefs: ['XAI_API_KEY'], endpoint: 'https://api.x.ai/v1/billing/credits', format: 'xai-credits' }),
   entry({ id: 'opencode-go', label: 'OpenCode Go', keyRefs: ['OPENCODE_GO_API_KEY'], endpoint: 'https://opencode.ai/zen/go/v1/usage', format: 'opencode-usage' }),
+  entry({ id: 'deepinfra', label: 'DeepInfra', keyRefs: ['DEEPINFRA_API_KEY', 'DEEPINFRA_TOKEN'], endpoint: 'https://api.deepinfra.com/payment/checklist?compute_owed=true', format: 'deepinfra-billing' }),
+  entry({ id: 'venice', label: 'Venice', keyRefs: ['VENICE_API_KEY', 'VENICE_KEY'], endpoint: 'https://api.venice.ai/api/v1/billing/balance', format: 'venice-balance' }),
+  entry({ id: 'neuralwatt', label: 'NeuralWatt', keyRefs: ['NEURALWATT_API_KEY'], endpoint: 'https://api.neuralwatt.com/v1/quota', format: 'neuralwatt-quota' }),
 ]
 
 /** Every credential ref the direct side may consume (for change watching). */

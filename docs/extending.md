@@ -14,7 +14,7 @@ L2 MCP 平台             只有网页 Cookie 会话 → 做个 MCP 服务器 �
 
 每次刷新都会探测内置供应商目录：**某个平台声明的凭证引用（`XXX_API_KEY`）只要能在 DSH 凭证域或环境变量里解析出来，该平台就自动出现在面板上**；key 删掉，平台随之消失。
 
-内置目录（除三大钉住平台外）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go。
+内置目录（除三大钉住平台外）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt。
 
 所以"加平台"最常见的情形其实是：**在 DSH 的模型配置里加了供应商（或把 key 写进凭证域），面板下一刷就有了。**
 

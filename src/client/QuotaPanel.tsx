@@ -42,13 +42,6 @@ const STATUS_TEXT: Record<string, string> = {
   'missing-mcp': '无 MCP',
 }
 
-/** Platforms with a key entry row (the direct adapters). */
-const KEY_PLATFORMS = [
-  { id: 'kimi', label: 'Kimi Code' },
-  { id: 'deepseek', label: 'DeepSeek' },
-  { id: 'zhipu', label: '智谱' },
-]
-
 /** Human label for a credential source layer. */
 function sourceText(source?: string): string {
   switch (source) {
@@ -170,7 +163,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
                 API Key 管理
                 <span className="dq-keys-hint">DSH 已添加的 key 会自动同步，一般无需手动填写</span>
               </button>
-              {state.showKeys && KEY_PLATFORMS.map((kp) => {
+              {state.showKeys && (state.keyPlatforms.length > 0 ? state.keyPlatforms : [{ id: 'kimi', label: 'Kimi Code' }, { id: 'deepseek', label: 'DeepSeek' }, { id: 'zhipu', label: '智谱' }]).map((kp) => {
                 const keyInfo = state.keys[kp.id]
                 const configured = keyInfo?.configured
                 const saving = state.savingKey === kp.id

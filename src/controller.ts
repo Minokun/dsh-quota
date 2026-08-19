@@ -134,6 +134,8 @@ export interface QuotaControllerFace {
   removeKey(platform: string): Promise<void>
   /** Describe configured keys (never the values): which ref supplies each platform. */
   keyStatus(): Promise<Record<string, { configured: boolean; source?: string; ref?: string; manual?: boolean }>>
+  /** Platforms the panel's key manager covers (every direct/API-key row). */
+  keyPlatforms(): Array<{ id: string; label: string }>
   /** Add one user-declared HTTP platform (persisted in the namespace). */
   addHttpPlatform(platform: CustomHttpPlatform): Promise<void>
   /** Remove one user-declared HTTP platform by id. */
@@ -182,6 +184,25 @@ export class QuotaController implements QuotaControllerFace {
     await scope.update(patch)
   }
 
+  /** Custom HTTP platforms as direct adapters (built-in catalog ids win). */
+  private customHttpAdapters(): DirectAdapter[] {
+    const builtinIds = new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].map((a) => a.id))
+    return this.state().httpPlatforms
+      .filter((p) => p.id && p.endpoint && !builtinIds.has(p.id))
+      .map((p): DirectAdapter => ({
+        id: p.id,
+        label: p.label,
+        keyRefs: [p.keyRef],
+        envKeys: [p.keyRef],
+        fetch: customHttpFetch(p),
+      }))
+  }
+
+  /** Every direct adapter: pinned + auto-discovered catalog + user-declared. */
+  private allDirectAdapters(): DirectAdapter[] {
+    return [...DIRECT_ADAPTERS, ...CATALOG_EXTRA, ...this.customHttpAdapters()]
+  }
+
   /** Refresh every platform; failures are contained per platform. */
   async refresh(): Promise<Config> {
     await this.patch({ refreshing: true })
@@ -220,18 +241,7 @@ export class QuotaController implements QuotaControllerFace {
         }
       }
 
-      // User-declared HTTP platforms from the namespace (panel-added) merged
-      // over the composition config; built-in catalog ids win over customs.
-      const builtinIds = new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].map((a) => a.id))
-      const customHttp = this.state().httpPlatforms
-        .filter((p) => !builtinIds.has(p.id))
-        .map((p): DirectAdapter => ({
-          id: p.id,
-          label: p.label,
-          keyRefs: [p.keyRef],
-          envKeys: [p.keyRef],
-          fetch: customHttpFetch(p),
-        }))
+      const customHttp = this.customHttpAdapters()
 
       const directJobs = [
         ...DIRECT_ADAPTERS.map((a) => runDirect(a, true)),
@@ -295,9 +305,22 @@ export class QuotaController implements QuotaControllerFace {
     }
   }
 
+  /** Which ref a manual save for this platform writes to: the pinned three keep plugin-private refs (deleting them can never break DSH model routing); catalog extras and custom platforms write their shared ref so DSH model providers pick the key up too. */
+  private writeRefFor(platform: string): string | undefined {
+    const priv = KEY_REFS[platform as keyof typeof KEY_REFS]
+    if (priv) return priv
+    const adapter = this.allDirectAdapters().find((a) => a.id === platform)
+    return adapter?.keyRefs[0]
+  }
+
+  /** Platforms the panel's key manager covers: every direct (API-key) row. */
+  keyPlatforms(): Array<{ id: string; label: string }> {
+    return this.allDirectAdapters().map((a) => ({ id: a.id, label: a.label }))
+  }
+
   /** Store one platform key into the credentials domain. */
   async saveKey(platform: string, key: string): Promise<void> {
-    const ref = KEY_REFS[platform as keyof typeof KEY_REFS]
+    const ref = this.writeRefFor(platform)
     if (!ref) throw new Error(`未知平台：${platform}`)
     const trimmed = key.trim()
     if (!trimmed) throw new Error('key 不能为空')
@@ -308,7 +331,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Remove one platform key from the credentials domain. */
   async removeKey(platform: string): Promise<void> {
-    const ref = KEY_REFS[platform as keyof typeof KEY_REFS]
+    const ref = this.writeRefFor(platform)
     if (!ref) throw new Error(`未知平台：${platform}`)
     const credentials = this.getCredentials()
     if (!credentials) return
@@ -381,7 +404,7 @@ export class QuotaController implements QuotaControllerFace {
   async keyStatus(): Promise<Record<string, { configured: boolean; source?: string; ref?: string; manual?: boolean }>> {
     const credentials = this.getCredentials()
     const out: Record<string, { configured: boolean; source?: string; ref?: string; manual?: boolean }> = {}
-    for (const adapter of DIRECT_ADAPTERS) {
+    for (const adapter of this.allDirectAdapters()) {
       const key = await resolveKey(credentials, adapter.keyRefs, adapter.envKeys)
       const privateRef = KEY_REFS[adapter.id as keyof typeof KEY_REFS]
       out[adapter.id] = key

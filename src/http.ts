@@ -32,7 +32,7 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') {
-      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls() })
+      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls(), keyPlatforms: quota.keyPlatforms() })
     }
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
