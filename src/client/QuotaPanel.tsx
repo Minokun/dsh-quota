@@ -99,6 +99,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const modelFrom = state.sessionModel
     ? `会话模型 ${state.sessionModel.provider}/${state.sessionModel.model}`
     : `默认模型 ${state.currentModel.provider}/${state.currentModel.model}`
+  // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
+  const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
   return (
     <div className="dq-root">
@@ -247,7 +249,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
           : '查看各平台会员额度'}
       >
         <span className={`dq-dot ${dotClass(state)}`} />
-        <span>会员额度</span>
+        <span className="dq-pill-name">{modelName || '会员额度'}</span>
         {summary && <span className="dq-pill-model">{summary}</span>}
       </button>
     </div>

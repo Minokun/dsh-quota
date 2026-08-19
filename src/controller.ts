@@ -44,13 +44,14 @@ function platformForProvider(provider: string): string {
   return ''
 }
 
-/** One-line quota summary for the pill, from one platform's items. */
+/** One-line quota summary for the pill: bare value with its symbol (剩xx% / ¥xx / $xx). */
 function summarize(snapshot: ProviderSnapshot): string {
   if (snapshot.status !== 'ok') return ''
   const head = (item: QuotaItem): string | undefined => {
-    if (item.remaining !== undefined) return `${item.label} 剩${item.remaining}`
-    if (item.display) return `${item.label} ${item.display}`
-    if (item.percent !== undefined) return `${item.label} 剩${Math.max(0, 100 - item.percent)}%`
+    // 百分比优先（带 %），其次货币/文本 display（自带符号），最后裸计数。
+    if (item.percent !== undefined) return `剩${Math.max(0, Math.round(100 - item.percent))}%`
+    if (item.display) return item.display
+    if (item.remaining !== undefined) return `剩${item.remaining}`
     return undefined
   }
   // Prefer the window/balance headlines over detail rows.

@@ -82,13 +82,14 @@ export function platformForProvider(provider: string): string {
   return ''
 }
 
-/** One-line quota summary from one platform's items (mirror of the host side). */
+/** One-line quota summary from one platform's items: bare value with its symbol. */
 export function summarizeItems(provider: PanelProvider | undefined): string {
   if (!provider || provider.status !== 'ok') return ''
   const head = (item: PanelItem): string | undefined => {
-    if (item.remaining !== undefined) return `${item.label} 剩${item.remaining}`
-    if (item.display) return `${item.label} ${item.display}`
-    if (item.percent !== undefined) return `${item.label} 剩${Math.max(0, 100 - item.percent)}%`
+    // 百分比优先（带 %），其次货币/文本 display（自带符号），最后裸计数。
+    if (item.percent !== undefined) return `剩${Math.max(0, Math.round(100 - item.percent))}%`
+    if (item.display) return item.display
+    if (item.remaining !== undefined) return `剩${item.remaining}`
     return undefined
   }
   const priority = provider.items.find((i) => /周额度|小时窗口|总余额|余额|额度/.test(i.label))
