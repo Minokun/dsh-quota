@@ -1,0 +1,46 @@
+# npm Trusted Publishing: tag-push releases via GitHub Actions OIDC.
+#
+# One-time binding (npmjs.com → package dsh-quota → Settings → Trusted
+# Publisher → GitHub Actions):
+#   Organization or user: Minokun
+#   Repository:           dsh-quota
+#   Workflow filename:    publish.yml
+#   Allowed actions:      npm publish
+#
+# Release flow: `npm version patch && git push --follow-tags` (or
+# scripts/release.sh) — this workflow builds and publishes; no token, no OTP.
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest # trusted publishing requires GitHub-hosted runners
+    permissions:
+      id-token: write # OIDC token for npm trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Trusted publishing requires npm CLI >= 11.5.1.
+      - name: Latest npm CLI
+        run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      # tsdown host+client build, including the client-id consistency gate.
+      - run: pnpm build
+
+      # OIDC is auto-detected in GitHub Actions; provenance is generated
+      # automatically for trusted publishes. No token/OTP needed.
+      - run: npm publish --access public
