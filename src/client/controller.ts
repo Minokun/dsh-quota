@@ -54,6 +54,48 @@ export interface CustomDraft {
   format: string
 }
 
+/** Structural face of ctx.modelDirectories (avoids a hard type dependency). */
+export interface ModelDirectoriesLike {
+  directoryFor(sessionId: string): {
+    store: {
+      getSnapshot(): { current: { provider: string; model: string } | null }
+      subscribe(fn: () => void): () => void
+    }
+  }
+}
+
+/** Map a model-provider id onto a quota platform id (mirror of the host side). */
+export function platformForProvider(provider: string): string {
+  const p = provider.toLowerCase()
+  if (p.includes('kimi')) return 'kimi'
+  if (p.includes('deepseek')) return 'deepseek'
+  if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
+  if (p.includes('zai')) return 'zhipu'
+  if (p.includes('qwen') || p.includes('dashscope') || p.includes('bailian')) return 'qianwen'
+  if (p.includes('moonshot')) return 'moonshot'
+  if (p.includes('openrouter')) return 'openrouter'
+  if (p.includes('siliconflow')) return 'siliconflow'
+  if (p.includes('minimax')) return 'minimax'
+  if (p.includes('step')) return 'stepfun'
+  if (p.includes('xai') || p.includes('grok')) return 'xai'
+  if (p.includes('opencode')) return 'opencode-go'
+  return ''
+}
+
+/** One-line quota summary from one platform's items (mirror of the host side). */
+export function summarizeItems(provider: PanelProvider | undefined): string {
+  if (!provider || provider.status !== 'ok') return ''
+  const head = (item: PanelItem): string | undefined => {
+    if (item.remaining !== undefined) return `${item.label} 剩${item.remaining}`
+    if (item.display) return `${item.label} ${item.display}`
+    if (item.percent !== undefined) return `${item.label} 剩${Math.max(0, 100 - item.percent)}%`
+    return undefined
+  }
+  const priority = provider.items.find((i) => /周额度|小时窗口|总余额|余额|额度/.test(i.label))
+  const first = priority ?? provider.items[0]
+  return first ? head(first) ?? '' : ''
+}
+
 /** What the panel renders. */
 export interface QuotaPanelState {
   /** False until the first status read lands. */
@@ -83,8 +125,10 @@ export interface QuotaPanelState {
   customDraft: CustomDraft
   /** Add/remove round trip in flight. */
   savingCustom: boolean
-  /** DSH 当前默认模型及额度摘要（pill 展示）。 */
+  /** DSH 当前默认模型及额度摘要（pill 兜底展示）。 */
   currentModel: { provider: string; model: string; platform: string; summary: string }
+  /** 当前会话实际选用的模型（优先于默认模型展示在 pill）。 */
+  sessionModel: { provider: string; model: string } | null
 }
 
 /** The registration-side face the slot entry injects. */
@@ -104,6 +148,8 @@ export interface QuotaPanelFace {
   editCustom(field: keyof CustomDraft, value: string): void
   addCustom(): void
   removeCustom(id: string): void
+  /** Follow a session's model selection (called when the visible session changes). */
+  watchSession(sessionId: string | undefined): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -124,6 +170,7 @@ const INITIAL: QuotaPanelState = {
   customDraft: { label: '', endpoint: '', keyRef: '', format: 'openai-billing' },
   savingCustom: false,
   currentModel: { provider: '', model: '', platform: '', summary: '' },
+  sessionModel: null,
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -134,10 +181,42 @@ const AUTO_REFRESH_STALE_MS = 5 * 60 * 1000
 /** Drives the panel off the plugin's HTTP API. */
 export class QuotaPanelController {
   private readonly store: SnapshotStore<QuotaPanelState>
+  private modelDirs: ModelDirectoriesLike | undefined
+  private unwatchModel: (() => void) | undefined
+  private watchingSession: string | undefined
 
   constructor() {
     this.store = createSnapshotStore<QuotaPanelState>(INITIAL)
     void this.reload()
+  }
+
+  /** Bind ctx.modelDirectories so the pill can follow the visible session's model. */
+  bindModelDirectories(dirs: ModelDirectoriesLike | undefined): void {
+    this.modelDirs = dirs
+  }
+
+  /** Subscribe to one session's model selection; undefined clears back to the default-model summary. */
+  watchSession(sessionId: string | undefined): void {
+    if (sessionId === this.watchingSession) return
+    this.watchingSession = sessionId
+    this.unwatchModel?.()
+    this.unwatchModel = undefined
+    const dirs = this.modelDirs
+    if (!dirs || !sessionId) {
+      this.patch({ sessionModel: null })
+      return
+    }
+    let store: { getSnapshot(): { current: { provider: string; model: string } | null }; subscribe(fn: () => void): () => void }
+    try {
+      store = dirs.directoryFor(sessionId).store
+    } catch {
+      // Session without Agent-bound model RPCs (e.g. subagent views).
+      this.patch({ sessionModel: null })
+      return
+    }
+    const applyCurrent = (): void => this.patch({ sessionModel: store.getSnapshot().current ?? null })
+    applyCurrent()
+    this.unwatchModel = store.subscribe(applyCurrent)
   }
 
   /** Build the face the slot registration injects. */
@@ -162,6 +241,7 @@ export class QuotaPanelController {
       editCustom: (field, value) => this.patch({ customDraft: { ...this.store.getSnapshot().customDraft, [field]: value }, formError: '' }),
       addCustom: () => { void this.addCustom() },
       removeCustom: (id) => { void this.removeCustom(id) },
+      watchSession: (sessionId) => { this.watchSession(sessionId) },
     }
   }
 

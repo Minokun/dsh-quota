@@ -9,7 +9,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { QuotaPanel } from './QuotaPanel.tsx'
-import { QuotaPanelController } from './controller.ts'
+import { QuotaPanelController, type ModelDirectoriesLike } from './controller.ts'
 import { PANEL_CSS, STYLE_TAG_ID } from './styles.ts'
 
 /** Required services (cordis fiber inject). */
@@ -23,6 +23,11 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => injectStyles(), 'dsh-quota: panel styles')
 
   const controller = new QuotaPanelController()
+  // Per-session model selection lives in ctx.modelDirectories (the
+  // model-selection plugin); optional — the pill falls back to the host's
+  // default-model summary when it is absent.
+  const dirs = (ctx as unknown as { get(name: string): unknown }).get('modelDirectories') as ModelDirectoriesLike | undefined
+  controller.bindModelDirectories(dirs)
 
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',

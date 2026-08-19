@@ -11,7 +11,8 @@
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { QuotaPanelFace, QuotaPanelState } from './controller.ts'
+import { useEffect } from 'react'
+import { platformForProvider, summarizeItems, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 
 /** Props the renderer binds for the quota panel. */
 export type QuotaPanelProps = PropsRuntime<'shell.overlay'> & InjectFace<QuotaPanelFace>
@@ -83,6 +84,21 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const busy = state.busy
   const okCount = state.providers.filter((p) => p.status === 'ok').length
   const totalCount = state.providers.length
+
+  // Follow the visible session's model: the sessions list standard prop
+  // reports the current session id; the controller subscribes to that
+  // session's model directory. Falls back to the host's default-model summary.
+  const currentSessionId = props.useSessions?.((s) => s.current)
+  useEffect(() => {
+    props.watchSession(currentSessionId ?? undefined)
+  }, [currentSessionId])
+  const sessionSummary = state.sessionModel
+    ? summarizeItems(state.providers.find((p) => p.id === platformForProvider(state.sessionModel!.provider)))
+    : ''
+  const summary = sessionSummary || state.currentModel.summary
+  const modelFrom = state.sessionModel
+    ? `会话模型 ${state.sessionModel.provider}/${state.sessionModel.model}`
+    : `默认模型 ${state.currentModel.provider}/${state.currentModel.model}`
 
   return (
     <div className="dq-root">
@@ -226,13 +242,13 @@ export function QuotaPanel(props: QuotaPanelProps) {
         type="button"
         className="dq-pill"
         onClick={() => { props.toggle() }}
-        title={state.currentModel.summary
-          ? `当前模型 ${state.currentModel.provider}/${state.currentModel.model}：${state.currentModel.summary}`
+        title={summary
+          ? `${modelFrom}：${summary}`
           : '查看各平台会员额度'}
       >
         <span className={`dq-dot ${dotClass(state)}`} />
         <span>会员额度</span>
-        {state.currentModel.summary && <span className="dq-pill-model">{state.currentModel.summary}</span>}
+        {summary && <span className="dq-pill-model">{summary}</span>}
       </button>
     </div>
   )
