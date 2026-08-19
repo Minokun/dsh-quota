@@ -144,21 +144,56 @@ const qianwen: McpAdapter = {
   id: 'qianwen',
   label: '通义千问 (百炼)',
   calls: [
+    { name: 'mcp__qianwenai__qw_coding_plan', args: {} },
     { name: 'mcp__qianwenai__qw_token_plan_instances', args: {} },
     { name: 'mcp__qianwenai__qw_available_amount', args: {} },
   ],
   parse(results) {
     const items: QuotaItem[] = []
-    for (const { value } of results) {
+    for (const { name, value } of results) {
+      // Coding Plan 控制台 RPC：实例状态 + 5h/周/月配额窗口。
+      if (name.includes('coding_plan')) {
+        const data = ((value as Record<string, unknown>)?.data ?? value) as Record<string, unknown>
+        const infos = Array.isArray(data.codingPlanInstanceInfos) ? data.codingPlanInstanceInfos as Array<Record<string, unknown>> : []
+        const inst = infos[0]
+        if (inst) {
+          const status = str(inst.status)
+          const name_ = str(inst.instanceName) ?? 'Coding Plan'
+          const endMs = num(inst.instanceEndTime)
+          items.push({
+            label: name_,
+            display: status === 'VALID' ? `生效中（剩 ${num(inst.remainingDays) ?? '?'} 天）` : (status === 'INVALID' ? '已过期' : status ?? ''),
+            resetAt: status === 'VALID' && endMs !== undefined ? new Date(endMs).toISOString() : undefined,
+          })
+        }
+        const quota = (data.codingPlanQuotaInfo ?? {}) as Record<string, unknown>
+        const window_ = (usedKey: string, totalKey: string, resetKey: string, label: string): void => {
+          const used = num(quota[usedKey])
+          const total = num(quota[totalKey])
+          if (used === undefined && total === undefined) return
+          items.push({
+            label,
+            used,
+            limit: total,
+            remaining: used !== undefined && total !== undefined ? total - used : undefined,
+            percent: pct(used, total),
+            resetAt: (() => { const ms = num(quota[resetKey]); return ms !== undefined ? new Date(ms).toISOString() : undefined })(),
+          })
+        }
+        window_('per5HourUsedQuota', 'per5HourTotalQuota', 'per5HourQuotaNextRefreshTime', '5 小时窗口')
+        window_('perWeekUsedQuota', 'perWeekTotalQuota', 'perWeekQuotaNextRefreshTime', '本周窗口')
+        window_('perBillMonthUsedQuota', 'perBillMonthTotalQuota', 'perBillMonthQuotaNextRefreshTime', '本月窗口')
+        continue
+      }
       const rows = quotaRows(value)
       if (rows.length > 0) {
         for (const r of rows.slice(0, 3)) items.push(rowItem(r, 'Token 套餐'))
         continue
       }
       const amount = moneyItem(value, '可用金额', ['AvailableAmount', 'available_amount'])
-      if (amount) items.push(amount)
+      if (amount) items.push({ ...amount, display: `¥${amount.display}` })
       const end = walk(value, (v) => typeof v === 'object' && v !== null && !Array.isArray(v) && (v as Record<string, unknown>).EndTime !== undefined)[0] as Record<string, unknown> | undefined
-      if (end && str(end.EndTime)) items.push({ label: '套餐到期', resetAt: str(end.EndTime) })
+      if (end && str(end.EndTime)) items.push({ label: 'Token 套餐到期', resetAt: str(end.EndTime) })
     }
     if (items.length === 0) items.push({ label: '原始返回', display: JSON.stringify(results).slice(0, 200) })
     return items
@@ -316,8 +351,8 @@ export function customAdapter(platform: { id: string; label: string; tools: stri
  */
 export async function runMcpAdapter(tools: ToolRuntime, adapter: McpAdapter): Promise<ProviderSnapshot> {
   const results: Array<{ name: string; value: unknown }> = []
-  let missing = false
   let firstError: string | undefined
+  let unknownCount = 0
 
   for (const call of adapter.calls) {
     try {
@@ -329,6 +364,10 @@ export async function runMcpAdapter(tools: ToolRuntime, adapter: McpAdapter): Pr
       })
       if (outcome.isError) {
         const message = typeof outcome.error?.message === 'string' ? outcome.error.message : String(outcome.error ?? 'error')
+        if (/not found|unknown tool|no tool|unregistered/i.test(message)) {
+          unknownCount++
+          continue // 单个工具不存在只跳过（旧版 MCP 少工具时其余工具仍可用）
+        }
         if (!firstError) firstError = message
         continue
       }
@@ -336,14 +375,15 @@ export async function runMcpAdapter(tools: ToolRuntime, adapter: McpAdapter): Pr
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/not found|unknown tool|no tool|unregistered/i.test(message)) {
-        missing = true
-        break
+        unknownCount++
+        continue
       }
       if (!firstError) firstError = message
     }
   }
 
-  if (missing) {
+  // 所有工具都不存在 = MCP 服务器没注册（行隐藏）；部分不存在则静默降级。
+  if (unknownCount === adapter.calls.length && results.length === 0) {
     return {
       id: adapter.id,
       label: adapter.label,

@@ -103,7 +103,7 @@ export function summarizeItems(provider: PanelProvider | undefined): string {
     const tag = shortTag(item.label)
     return tag ? `${tag} ${value}` : value
   }
-  const headlines = provider.items.filter((i) => /窗口|周|余额|额度/.test(i.label))
+  const headlines = provider.items.filter((i) => /窗口|周|余额|额度|金额/.test(i.label))
   const parts = (headlines.length > 0 ? headlines : provider.items)
     .map(head)
     .filter((v): v is string => Boolean(v))

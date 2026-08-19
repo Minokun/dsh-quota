@@ -100,7 +100,7 @@ function summarize(snapshot: ProviderSnapshot): string {
     return tag ? `${tag} ${value}` : value
   }
   // Coding Plan 有多个窗口（5h/周…）时都显示，最多两条。
-  const headlines = snapshot.items.filter((i) => /窗口|周|余额|额度/.test(i.label))
+  const headlines = snapshot.items.filter((i) => /窗口|周|余额|额度|金额/.test(i.label))
   const parts = (headlines.length > 0 ? headlines : snapshot.items)
     .map(head)
     .filter((v): v is string => Boolean(v))
