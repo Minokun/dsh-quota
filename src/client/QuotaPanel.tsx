@@ -128,6 +128,13 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   </span>
                 )}
                 {p.message && <span className="dq-provider-msg">{p.message}</span>}
+                {(() => {
+                  const loginish = p.status === 'error' && Boolean(p.message) && /未登录|未授权|未认证|401|登录|login|unauthorized/i.test(p.message ?? '')
+                  if (!loginish || !state.loginFlows[p.id]) return null
+                  return state.loginPending === p.id
+                    ? <button type="button" className="dq-btn dq-btn--primary dq-login-btn" disabled={busy} onClick={() => { props.loginRetry(p.id) }}>我已完成登录，重试</button>
+                    : <button type="button" className="dq-btn dq-login-btn" onClick={() => { props.loginStart(p.id) }}>去登录 ↗</button>
+                })()}
                 {p.items.length > 0 && (
                   <div className="dq-items">
                     {p.items.map((item, i) => {

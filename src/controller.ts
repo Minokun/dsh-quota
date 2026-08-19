@@ -12,13 +12,46 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { Config, CustomHttpPlatform, CustomMcpPlatform, ProviderSnapshot, QuotaItem } from './config.ts'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
+
+/** Built-in login pages for the known MCP platforms (config loginFlows override). */
+const DEFAULT_LOGIN_URLS: Record<string, string> = {
+  scnet: 'https://www.scnet.cn/',
+  qianwen: 'https://bailian.console.aliyun.com/',
+  bigmodel: 'https://open.bigmodel.cn/',
+  tokenrouter: 'https://www.tokenrouter.tech/login',
+  supawriter: 'https://supawriter.sevnday.com/',
+}
+
+/** CDP port for login flows that need cookie extraction afterwards. */
+const LOGIN_CHROME_PORT = 9229
+
+const execFileAsync = promisify(execFile)
+
+/** Open a URL in the default browser (or a CDP-enabled Chrome for cookie flows). */
+function openUrl(url: string, debugChrome: boolean): void {
+  if (process.platform === 'darwin') {
+    if (debugChrome) {
+      execFile('open', ['-na', 'Google Chrome', '--args', `--remote-debugging-port=${LOGIN_CHROME_PORT}`, '--user-data-dir=/tmp/dsh-quota-login', url], () => undefined)
+      return
+    }
+    execFile('open', [url], () => undefined)
+    return
+  }
+  if (process.platform === 'win32') {
+    execFile('cmd', ['/c', 'start', '', url], () => undefined)
+    return
+  }
+  execFile('xdg-open', [url], () => undefined)
+}
 
 /** The DSH default-model selection (agent-default-model settings namespace). */
 export interface DefaultModelSelection {
@@ -105,6 +138,12 @@ export interface QuotaControllerFace {
   addHttpPlatform(platform: CustomHttpPlatform): Promise<void>
   /** Remove one user-declared HTTP platform by id. */
   removeHttpPlatform(id: string): Promise<void>
+  /** Login flows known to the panel: platform id → login page URL. */
+  loginUrls(): Record<string, string>
+  /** Open a platform's login page (CDP-enabled Chrome when the flow needs cookies). */
+  loginStart(platform: string): Promise<void>
+  /** User confirms login done: run the flow's afterLogin hook, then refresh. */
+  loginDone(platform: string): Promise<Config>
 }
 
 export class QuotaController implements QuotaControllerFace {
@@ -133,7 +172,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], currentModel: EMPTY_CURRENT_MODEL, providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], currentModel: EMPTY_CURRENT_MODEL, providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -301,6 +340,41 @@ export class QuotaController implements QuotaControllerFace {
   async removeHttpPlatform(id: string): Promise<void> {
     await this.patch({ httpPlatforms: this.state().httpPlatforms.filter((p) => p.id !== id) })
     await this.refresh()
+  }
+
+  /** Built-in login URLs overridden by config loginFlows. */
+  private flows(): Map<string, LoginFlow> {
+    const map = new Map<string, LoginFlow>()
+    for (const [id, url] of Object.entries(DEFAULT_LOGIN_URLS)) map.set(id, { id, url })
+    for (const f of this.state().loginFlows ?? []) {
+      if (f.id && f.url) map.set(f.id, f)
+    }
+    return map
+  }
+
+  /** Platform id → login page URL, for the panel's 去登录 button. */
+  loginUrls(): Record<string, string> {
+    return Object.fromEntries([...this.flows().values()].map((f) => [f.id, f.url]))
+  }
+
+  /** Open the platform's login page. */
+  async loginStart(platform: string): Promise<void> {
+    const flow = this.flows().get(platform)
+    if (!flow) throw new Error(`平台 ${platform} 没有配置登录页`)
+    openUrl(flow.url, flow.debugChrome === true)
+  }
+
+  /** User confirms login: run the optional afterLogin hook, then refresh. */
+  async loginDone(platform: string): Promise<Config> {
+    const flow = this.flows().get(platform)
+    if (flow?.afterLogin) {
+      try {
+        await execFileAsync('sh', ['-c', flow.afterLogin], { timeout: 60000 })
+      } catch (error) {
+        this.ctx.logger.warn(`quota: afterLogin for ${platform} failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return this.refresh()
   }
 
   /** Describe configured keys (never the values): which ref supplies each platform. */

@@ -32,12 +32,25 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') {
-      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS })
+      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls() })
     }
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
       if (path === '/refresh') {
         return send(res, 200, await quota.refresh())
+      }
+      if (path === '/login') {
+        const body = await readJson(req)
+        const platform = stringField(body, 'platform')
+        if (!platform) return send(res, 400, { error: 'platform 必填' })
+        await quota.loginStart(platform)
+        return send(res, 200, { ok: true })
+      }
+      if (path === '/login/done') {
+        const body = await readJson(req)
+        const platform = stringField(body, 'platform')
+        if (!platform) return send(res, 400, { error: 'platform 必填' })
+        return send(res, 200, await quota.loginDone(platform))
       }
       if (path === '/keys') {
         const body = await readJson(req)

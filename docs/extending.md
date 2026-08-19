@@ -81,6 +81,22 @@ L2 MCP 平台             只有网页 Cookie 会话 → 做个 MCP 服务器 �
 
 > Cookie 会话会过期（各站几天到一个月不等），过期后平台行显示失败，重新登录/更新会话即恢复。这也是这类平台不适合做成内置直连的原因。
 
+### 登录失败时的「去登录 → 重试」按钮
+
+平台行报登录类错误（未登录/401/…）且配置了登录页时，卡片会显示「去登录」按钮：点击打开平台登录页，按钮随即变成「我已完成登录，重试」。内置了常见平台的登录页；可用 `loginFlows` 覆盖或新增，并挂一个 `afterLogin` 命令在重试前执行（比如把刚登录的浏览器 cookie 同步回 MCP 的会话文件）：
+
+```yaml
+- id: quota
+  config:
+    loginFlows:
+      - id: mysite
+        url: 'https://mysite.com/login'
+        debugChrome: true        # 用带 CDP 调试端口的 Chrome 打开（供脚本抓 cookie）
+        afterLogin: 'sh /path/to/sync-session.sh'
+```
+
+注意：在网页上登录**不会**自动更新 MCP 服务器自己存的会话 cookie——所以 cookie 制平台需要 `afterLogin` 钩子把浏览器会话同步回去，否则重试还是失败。
+
 ## 想让我们内置某个平台？
 
 提 [issue](https://github.com/Minokun/dsh-quota/issues)，附上：

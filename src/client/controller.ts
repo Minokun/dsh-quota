@@ -130,6 +130,10 @@ export interface QuotaPanelState {
   currentModel: { provider: string; model: string; platform: string; summary: string }
   /** 当前会话实际选用的模型（优先于默认模型展示在 pill）。 */
   sessionModel: { provider: string; model: string } | null
+  /** 平台 id → 登录页 URL（登录态失败的平台显示「去登录」）。 */
+  loginFlows: Record<string, string>
+  /** 已点过「去登录」、等待用户确认的平台 id。 */
+  loginPending: string
 }
 
 /** The registration-side face the slot entry injects. */
@@ -151,6 +155,10 @@ export interface QuotaPanelFace {
   removeCustom(id: string): void
   /** Follow a session's model selection (called when the visible session changes). */
   watchSession(sessionId: string | undefined): void
+  /** Open the platform login page. */
+  loginStart(platform: string): void
+  /** User confirms login done → host runs the flow hook and refreshes. */
+  loginRetry(platform: string): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -172,6 +180,8 @@ const INITIAL: QuotaPanelState = {
   savingCustom: false,
   currentModel: { provider: '', model: '', platform: '', summary: '' },
   sessionModel: null,
+  loginFlows: {},
+  loginPending: '',
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -243,13 +253,15 @@ export class QuotaPanelController {
       addCustom: () => { void this.addCustom() },
       removeCustom: (id) => { void this.removeCustom(id) },
       watchSession: (sessionId) => { this.watchSession(sessionId) },
+      loginStart: (platform) => { void this.loginStart(platform) },
+      loginRetry: (platform) => { void this.loginRetry(platform) },
     }
   }
 
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel'] }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string> }>('/status')
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -258,11 +270,31 @@ export class QuotaPanelController {
         keys: state.keys,
         customPlatforms: state.httpPlatforms ?? [],
         formats: state.formats ?? [],
+        loginFlows: state.loginFlows ?? {},
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
     } catch {
       this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })
     }
+  }
+
+  /** Open the platform's login page; the button then flips to 重试. */
+  private async loginStart(platform: string): Promise<void> {
+    try {
+      await request('/login', { platform })
+      this.patch({ loginPending: platform, formError: '' })
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** User confirms login: host runs the flow's afterLogin hook and refreshes. */
+  private async loginRetry(platform: string): Promise<void> {
+    await this.roundTrip(async () => {
+      await request('/login/done', { platform })
+      this.patch({ loginPending: '' })
+      await this.reload()
+    })
   }
 
   /** Add the custom-platform draft as a new provider row. */

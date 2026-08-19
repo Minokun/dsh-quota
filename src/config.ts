@@ -52,6 +52,23 @@ export interface CustomMcpPlatform {
 }
 
 /**
+ * One platform login flow: when the platform's row fails with a login-ish
+ * error (未登录/401/…), the card shows 「去登录」 opening `url`, then offers
+ * 重试 which optionally runs `afterLogin` first (e.g. re-sync an MCP server's
+ * session cookie from the just-logged-in browser) and then refreshes.
+ */
+export interface LoginFlow {
+  /** Platform id this flow belongs to. */
+  id: string
+  /** Login page URL. */
+  url: string
+  /** Open in a CDP-enabled Chrome (debug port) so afterLogin can read cookies. */
+  debugChrome?: boolean
+  /** Shell command run after the user confirms login, before the refresh. */
+  afterLogin?: string
+}
+
+/**
  * One user-declared direct-HTTP platform (aggregator, one-api/new-api site,
  * or any provider whose balance endpoint matches a built-in format). Addable
  * from the panel UI or the composition config; persisted in the namespace.
@@ -98,6 +115,8 @@ export interface Config {
   mcpPlatforms: CustomMcpPlatform[]
   /** Extra user-declared direct-HTTP platforms (default []). */
   httpPlatforms: CustomHttpPlatform[]
+  /** Login flows by platform id (composition-level; overrides built-in URLs). */
+  loginFlows: LoginFlow[]
   /** DSH 当前默认模型及其额度摘要（pill 展示；取不到时字段为空）。 */
   currentModel: {
     /** 模型供应商 id，如 kimi-coding。 */
@@ -132,6 +151,12 @@ export const Config: z<Config> = z.object({
     endpoint: z.string(),
     keyRef: z.string(),
     format: z.string(),
+  })).default([]),
+  loginFlows: z.array(z.object({
+    id: z.string(),
+    url: z.string(),
+    debugChrome: z.boolean(),
+    afterLogin: z.string(),
   })).default([]),
   currentModel: z.object({
     provider: z.string().default(''),
