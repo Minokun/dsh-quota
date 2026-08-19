@@ -107,4 +107,5 @@ export const PANEL_CSS = `
 .dq-custom-ref { flex: 1; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-tertiary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 select.dq-input { appearance: auto; cursor: pointer; }
 .dq-login-btn { align-self: flex-start; margin-top: 2px; }
+.dq-empty { font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #999); padding: 8px 4px; }
 `

@@ -286,7 +286,9 @@ export class QuotaController implements QuotaControllerFace {
       const customHttp = this.customHttpAdapters()
 
       const directJobs = [
-        ...DIRECT_ADAPTERS.map((a) => runDirect(a, true)),
+        // Built-ins are all auto-discovered now: no key → no row. Only
+        // user-declared custom platforms stay pinned (explicit user intent).
+        ...DIRECT_ADAPTERS.map((a) => runDirect(a, false)),
         ...CATALOG_EXTRA.map((a) => runDirect(a, false)),
         ...customHttp.map((a) => runDirect(a, true)),
       ]

@@ -114,6 +114,11 @@ export function QuotaPanel(props: QuotaPanelProps) {
             <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.close() }}>✕</button>
           </div>
           <div className="dq-panel-body">
+            {state.loaded && state.providers.length === 0 && (
+              <div className="dq-empty">
+                还没有可显示的平台——只有能解析到 key 的平台才会出现。在下方「API Key 管理」填入平台 key，或在 DSH 模型设置里配置供应商（key 自动同步）。
+              </div>
+            )}
             {state.providers.map((p) => (
               <div key={p.id} className="dq-provider">
                 <div className="dq-provider-head">

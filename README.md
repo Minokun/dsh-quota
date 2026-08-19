@@ -22,6 +22,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 - **定时自动更新**：默认每 5 分钟刷新一次（`refreshIntervalMinutes` 可调）；打开面板时数据超过 5 分钟也会自动补刷；手动「刷新」随时可用
 - **进度条可视化**：用量占比彩色进度条（<60% 绿 / 60–85% 黄 / >85% 红），带重置时间
+- **配置哪些显示哪些**：只有 key 能解析（或 MCP 已注册）的平台才显示，没配置的平台不占面板
 - **Key 自动同步**：直连平台的 API key 直接读 DSH 凭证域（与模型配置同一批 `apiKeyEnv` 引用）——DSH 里加过 key 就不用手动再填；凭证变更自动触发刷新
 - **手动 Key 兜底**：面板里可手动保存 key（存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置）
 
@@ -75,6 +76,18 @@ pnpm build        # 构建 host + client，含 client-id 一致性门禁
 pnpm typecheck
 sh scripts/reload.sh   # 构建；Host 改动重启 dsh 生效，界面改动刷新页面生效
 ```
+
+## 发布（maintainer）
+
+发版走 **npm Trusted Publishing（GitHub Actions OIDC）**——不需要本地 token 或 2FA 验证码：
+
+```sh
+sh scripts/release.sh          # 默认 patch；也可 sh scripts/release.sh minor / 0.8.0
+```
+
+流程：`npm version` 升版本并打 tag → 推送触发 `.github/workflows/publish.yml` → CI 里构建（含门禁）→ OIDC 认证发布，自带 SLSA provenance。动作日志见 [Actions](https://github.com/Minokun/dsh-quota/actions)。
+
+绑定配置（一次性，已绑好）：npmjs.com 包设置 → Trusted Publisher → GitHub Actions → `Minokun` / `dsh-quota` / `publish.yml` / 允许 `npm publish`。
 
 ## License
 

@@ -1,15 +1,13 @@
 /**
  * Direct HTTP adapters: a built-in provider CATALOG plus a format registry.
  *
- *   - PINNED platforms (Kimi / DeepSeek / Zhipu) always render a row, showing
- *     "missing-key" when no credential resolves — they are the onboarding
- *     surface for the panel's key manager.
- *   - CATALOG_EXTRA platforms are auto-discovered: the first credential ref
- *     that resolves wins the row; when nothing resolves the platform stays
- *     hidden. Add a key in DSH and the platform appears on the next refresh.
+ *   - Every built-in platform is auto-discovered: a row renders only when one
+ *     of its credential refs resolves (DSH credentials domain or environment).
+ *     No key → no row. One row PER RESOLVED REF (multi-account supported).
  *   - Users can add their own platforms (aggregators, one-api/new-api sites)
  *     through the panel or the `httpPlatforms` composition config by reusing
- *     a format from FORMATS.
+ *     a format from FORMATS; custom rows stay pinned even without a key so
+ *     the missing credential is visible.
  *
  * Catalog endpoints and response shapes follow the research verified by
  * CodexBar (docs/zai.md) and dsh-quota-panel (MIT) — window semantics for the
@@ -380,8 +378,10 @@ const kimiPlanOf = (body: unknown): string | undefined => {
 }
 
 /**
- * Pinned platforms: always rendered, "missing-key" when unconfigured. These
- * are the three the panel's key manager can store credentials for.
+ * The three primary platforms (Kimi / DeepSeek / Zhipu CN). Like every
+ * built-in they render only when a credential ref resolves; what makes them
+ * special is the panel's key manager can store PLUGIN-PRIVATE keys for them
+ * (see config.KEY_REFS), deletable without touching DSH model routing.
  */
 export const DIRECT_ADAPTERS: DirectAdapter[] = [
   entry({ id: 'kimi', label: 'Kimi Code', keyRefs: ['KIMI_CODING_API_KEY', 'KIMI_API_KEY'], endpoint: 'https://api.kimi.com/coding/v1/usages', format: 'kimi-coding', planOf: kimiPlanOf }),
