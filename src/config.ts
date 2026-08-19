@@ -109,7 +109,7 @@ export interface Config {
   refreshing: boolean
   /** Refresh once shortly after boot (default true). */
   refreshOnBoot: boolean
-  /** Periodic refresh interval in minutes; 0 disables it (default 0). */
+  /** Periodic refresh interval in minutes; 0 disables it (default 5). */
   refreshIntervalMinutes: number
   /** Extra user-declared MCP platforms (default []). */
   mcpPlatforms: CustomMcpPlatform[]
@@ -139,7 +139,7 @@ export const Config: z<Config> = z.object({
   refreshedAt: z.string().default(''),
   refreshing: z.boolean().default(false),
   refreshOnBoot: z.boolean().default(true),
-  refreshIntervalMinutes: z.number().default(0),
+  refreshIntervalMinutes: z.number().default(5),
   mcpPlatforms: z.array(z.object({
     id: z.string(),
     label: z.string(),

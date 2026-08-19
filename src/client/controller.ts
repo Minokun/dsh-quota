@@ -206,6 +206,13 @@ export class QuotaPanelController {
     this.modelDirs = dirs
   }
 
+  /** Periodic light re-read of the host snapshot (the host refreshes upstreams on its own cadence). */
+  pollIfVisible(): void {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (this.store.getSnapshot().busy) return
+    void this.reload()
+  }
+
   /** Subscribe to one session's model selection; undefined clears back to the default-model summary. */
   watchSession(sessionId: string | undefined): void {
     if (sessionId === this.watchingSession) return

@@ -29,6 +29,14 @@ export function apply(ctx: ClientContext): void {
   const dirs = (ctx as unknown as { get(name: string): unknown }).get('modelDirectories') as ModelDirectoriesLike | undefined
   controller.bindModelDirectories(dirs)
 
+  // The host refreshes quotas on its own cadence (default 5min); the client
+  // re-reads the snapshot every minute so the pill/panel pick it up. Cheap
+  // same-origin GET, skipped while the page is hidden.
+  ctx.effect(() => {
+    const t = setInterval(() => { controller.pollIfVisible() }, 60 * 1000)
+    return () => clearInterval(t)
+  }, 'dsh-quota: status poll')
+
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
     id: 'dsh-quota',
