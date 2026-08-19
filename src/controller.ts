@@ -59,6 +59,17 @@ export interface DefaultModelSelection {
   model: string
 }
 
+/** One DSH model provider (llm-pi-ai), for platform correspondence. */
+export interface LlmProviderInfo {
+  id: string
+  /** displayName ?? id. */
+  label: string
+  /** apiKeyEnv credential ref (may be absent on keyless providers). */
+  keyRef?: string
+  /** Custom providers only (built-ins keep theirs internal). */
+  baseURL?: string
+}
+
 /** Map a model-provider id (llm-pi-ai) onto a quota platform id. */
 function platformForProvider(provider: string): string {
   const p = provider.toLowerCase()
@@ -66,7 +77,7 @@ function platformForProvider(provider: string): string {
   if (p.includes('deepseek')) return 'deepseek'
   if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
   if (p.includes('zai')) return 'zhipu'
-  if (p.includes('qwen') || p.includes('dashscope') || p.includes('bailian')) return 'qianwen'
+  if (p.includes('qwen') || p.includes('dashscope')) return 'qianwen' // 注意：不带 'bailian'——自定义 bailian 供应商常是别人的 key，映射到自己账号的 MCP 行会显示错账号
   if (p.includes('moonshot')) return 'moonshot'
   if (p.includes('openrouter')) return 'openrouter'
   if (p.includes('siliconflow')) return 'siliconflow'
@@ -169,15 +180,15 @@ export class QuotaController implements QuotaControllerFace {
   private readonly getCredentials: () => CredentialProvider | undefined
   private readonly getCustomPlatforms: () => CustomMcpPlatform[]
   private readonly getDefaultModel: () => DefaultModelSelection | undefined
-  private readonly getProviderKeyRefs: () => Record<string, string>
+  private readonly getProviders: () => LlmProviderInfo[]
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviderKeyRefs: () => Record<string, string> = () => ({})) {
+  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviders: () => LlmProviderInfo[] = () => []) {
     this.ctx = ctx
     this.getScope = getScope
     this.getCredentials = getCredentials
     this.getCustomPlatforms = getCustomPlatforms
     this.getDefaultModel = getDefaultModel
-    this.getProviderKeyRefs = getProviderKeyRefs
+    this.getProviders = getProviders
   }
 
   /** Built-in MCP adapters plus user-declared ones (id collisions ignored). */
@@ -323,8 +334,10 @@ export class QuotaController implements QuotaControllerFace {
         })
         .filter((p) => p.status !== 'missing-mcp')
 
-      // DSH 模型供应商 id → apiKeyEnv（供 pill 精确对应平台卡片）。
-      const providerKeyRefs = this.getProviderKeyRefs()
+      // DSH 模型供应商：id → apiKeyEnv（供 pill 精确对应平台卡片）。
+      const llmProviders = this.getProviders()
+      const providerKeyRefs: Record<string, string> = {}
+      for (const lp of llmProviders) if (lp.keyRef) providerKeyRefs[lp.id] = lp.keyRef
 
       // DSH 当前默认模型 → 先按 apiKeyEnv 精确对应卡片（同平台多号也准），
       // 再退回到名称模糊匹配 → 一句话额度摘要（pill 展示）。
@@ -336,6 +349,31 @@ export class QuotaController implements QuotaControllerFace {
         const row = (ref ? providers.find((p) => p.keyRef === ref) : undefined)
           ?? (platform ? providers.find((p) => p.id === platform || p.id.startsWith(`${platform}#`)) : undefined)
         currentModel = { provider: dm.provider, model: dm.model, platform: row?.id ?? platform, summary: row ? summarize(row) : '' }
+      }
+
+      // 没有任何额度行对应的模型供应商（如别人分享的 key / 自建网关）：
+      // 免费探一下 /models 活性，明示"该平台无 API-key 额度接口"。
+      const matchedRow = (lp: LlmProviderInfo): boolean => {
+        if (lp.keyRef && providers.some((p) => p.keyRef === lp.keyRef)) return true
+        const platform = platformForProvider(lp.id)
+        return Boolean(platform) && providers.some((p) => p.id === platform || p.id.startsWith(`${platform}#`))
+      }
+      for (const lp of llmProviders) {
+        if (!lp.keyRef || !lp.baseURL || matchedRow(lp)) continue
+        const key = await resolveKey(credentials, [lp.keyRef], [lp.keyRef])
+        if (!key) continue
+        const rowId = `probe#${lp.id}`
+        try {
+          const resp = await fetch(`${lp.baseURL.replace(/\/+$/, '')}/models`, {
+            headers: { Authorization: `Bearer ${key.value}` },
+            signal: AbortSignal.timeout(8000),
+          })
+          providers.push(resp.ok
+            ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, message: '该平台无 API-key 额度接口，仅探测服务可用性', items: [{ label: '模型服务', display: '在线' }] }
+            : { id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败 HTTP ${resp.status}`, items: [] })
+        } catch (error) {
+          providers.push({ id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败：${error instanceof Error ? error.message : String(error)}`, items: [] })
+        }
       }
 
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs }

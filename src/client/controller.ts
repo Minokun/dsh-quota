@@ -71,7 +71,7 @@ export function platformForProvider(provider: string): string {
   if (p.includes('deepseek')) return 'deepseek'
   if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
   if (p.includes('zai')) return 'zhipu'
-  if (p.includes('qwen') || p.includes('dashscope') || p.includes('bailian')) return 'qianwen'
+  if (p.includes('qwen') || p.includes('dashscope')) return 'qianwen' // 注意：不带 'bailian'——自定义 bailian 供应商常是别人的 key，映射到自己账号的 MCP 行会显示错账号
   if (p.includes('moonshot')) return 'moonshot'
   if (p.includes('openrouter')) return 'openrouter'
   if (p.includes('siliconflow')) return 'siliconflow'

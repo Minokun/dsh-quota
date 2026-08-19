@@ -55,15 +55,20 @@ export function apply(ctx: Context, config: Config): void {
         : undefined
     },
     () => {
-      // llm-pi-ai namespace: providers.<id>.apiKeyEnv — lets the panel match a
-      // session's model provider to the exact credential ref (two accounts on
-      // one platform stay distinct).
+      // llm-pi-ai namespace: providers.<id> → { apiKeyEnv, baseURL, displayName }
+      // — the model→platform correspondence keys on the exact credential ref,
+      // and unmatched providers get a liveness probe row.
       const d = settingsSvc?.describe?.().find((x) => x.ns === 'llm-pi-ai')
-      const providers = (d?.value as { providers?: Record<string, { apiKeyEnv?: unknown }> } | undefined)?.providers
-      if (!providers || typeof providers !== 'object') return {}
-      const out: Record<string, string> = {}
+      const providers = (d?.value as { providers?: Record<string, { apiKeyEnv?: unknown; baseURL?: unknown; displayName?: unknown }> } | undefined)?.providers
+      if (!providers || typeof providers !== 'object') return []
+      const out: Array<{ id: string; label: string; keyRef?: string; baseURL?: string }> = []
       for (const [id, p] of Object.entries(providers)) {
-        if (typeof p?.apiKeyEnv === 'string' && p.apiKeyEnv) out[id] = p.apiKeyEnv
+        out.push({
+          id,
+          label: typeof p?.displayName === 'string' && p.displayName ? p.displayName : id,
+          ...(typeof p?.apiKeyEnv === 'string' && p.apiKeyEnv ? { keyRef: p.apiKeyEnv } : {}),
+          ...(typeof p?.baseURL === 'string' && p.baseURL ? { baseURL: p.baseURL } : {}),
+        })
       }
       return out
     },
