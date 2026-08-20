@@ -108,4 +108,14 @@ export const PANEL_CSS = `
 select.dq-input { appearance: auto; cursor: pointer; }
 .dq-login-btn { align-self: flex-start; margin-top: 2px; }
 .dq-empty { font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #999); padding: 8px 4px; }
+
+/* Login-expiry reminder toast above the pill. */
+.dq-toast {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2, rgba(22, 22, 30, 0.97)); color: var(--dsw-alias-label-primary, #eee);
+  border: 1px solid rgba(245, 166, 35, 0.45);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 12px; pointer-events: auto;
+}
+.dq-toast-text { white-space: nowrap; }
 `

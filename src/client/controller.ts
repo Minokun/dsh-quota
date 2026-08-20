@@ -152,6 +152,8 @@ export interface QuotaPanelState {
   keyPlatforms: Array<{ id: string; label: string }>
   /** DSH 模型供应商 id → apiKeyEnv（host 下发，pill 精确对应卡片）。 */
   providerKeyRefs: Record<string, string>
+  /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
+  loginAlerts: Array<{ id: string; label: string }>
 }
 
 /** The registration-side face the slot entry injects. */
@@ -177,6 +179,8 @@ export interface QuotaPanelFace {
   loginStart(platform: string): void
   /** User confirms login done → host runs the flow hook and refreshes. */
   loginRetry(platform: string): void
+  /** Dismiss one login alert until the platform recovers and fails again. */
+  dismissLogin(platform: string): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -202,6 +206,7 @@ const INITIAL: QuotaPanelState = {
   loginPending: '',
   keyPlatforms: [],
   providerKeyRefs: {},
+  loginAlerts: [],
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -210,9 +215,14 @@ const API_PREFIX = '/plugins/dsh-quota/api'
 const AUTO_REFRESH_STALE_MS = 5 * 60 * 1000
 
 /** Drives the panel off the plugin's HTTP API. */
+/** 登录态失效的错误特征。 */
+const LOGINISH = /未登录|未授权|未认证|401|登录|login|unauthorized/i
+
 export class QuotaPanelController {
   private readonly store: SnapshotStore<QuotaPanelState>
   private modelDirs: ModelDirectoriesLike | undefined
+  /** 已忽略提醒的平台（恢复后再次失败会重新提醒）。 */
+  private readonly dismissedAlerts = new Set<string>()
   private unwatchModel: (() => void) | undefined
   private watchingSession: string | undefined
 
@@ -282,6 +292,7 @@ export class QuotaPanelController {
       watchSession: (sessionId) => { this.watchSession(sessionId) },
       loginStart: (platform) => { void this.loginStart(platform) },
       loginRetry: (platform) => { void this.loginRetry(platform) },
+      dismissLogin: (platform) => { this.dismissLogin(platform) },
     }
   }
 
@@ -302,9 +313,27 @@ export class QuotaPanelController {
         providerKeyRefs: state.providerKeyRefs ?? {},
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
+      this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
     } catch {
       this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })
     }
+  }
+
+  /** Recompute the login-alert list from the latest snapshot. */
+  private updateLoginAlerts(providers: PanelProvider[], flows: Record<string, string>): void {
+    for (const p of providers) {
+      if (p.status === 'ok') this.dismissedAlerts.delete(p.id) // 恢复后清除忽略记录
+    }
+    const loginAlerts = providers
+      .filter((p) => p.status === 'error' && p.message && LOGINISH.test(p.message) && flows[p.id] && !this.dismissedAlerts.has(p.id))
+      .map((p) => ({ id: p.id, label: p.label }))
+    this.patch({ loginAlerts })
+  }
+
+  /** Dismiss one login alert until the platform recovers and fails again. */
+  private dismissLogin(platform: string): void {
+    this.dismissedAlerts.add(platform)
+    this.patch({ loginAlerts: this.store.getSnapshot().loginAlerts.filter((a) => a.id !== platform) })
   }
 
   /** Open the platform's login page; the button then flips to 重试. */

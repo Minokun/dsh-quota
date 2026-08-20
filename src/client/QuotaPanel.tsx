@@ -103,6 +103,15 @@ export function QuotaPanel(props: QuotaPanelProps) {
 
   return (
     <div className="dq-root">
+      {state.loginAlerts.map((a) => (
+        <div key={a.id} className="dq-toast" role="alert">
+          <span className="dq-toast-text">⚠️ {a.label} 登录已失效</span>
+          {state.loginPending === a.id
+            ? <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.loginRetry(a.id) }}>重试</button>
+            : <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.loginStart(a.id) }}>去登录</button>}
+          <button type="button" className="dq-btn dq-btn--ghost" title="忽略本次提醒" onClick={() => { props.dismissLogin(a.id) }}>✕</button>
+        </div>
+      ))}
       {state.open && (
         <div className="dq-panel">
           <div className="dq-panel-head">
