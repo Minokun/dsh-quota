@@ -24,10 +24,14 @@ export function apply(ctx: ClientContext): void {
 
   const controller = new QuotaPanelController()
   // Per-session model selection lives in ctx.modelDirectories (the
-  // model-selection plugin); optional — the pill falls back to the host's
-  // default-model summary when it is absent.
-  const dirs = (ctx as unknown as { get(name: string): unknown }).get('modelDirectories') as ModelDirectoriesLike | undefined
-  controller.bindModelDirectories(dirs)
+  // model-selection plugin). It is NOT a hard dependency — the pill falls
+  // back to the host's default-model summary without it. But a one-shot
+  // ctx.get at boot races the service's own registration (both entries are
+  // immediately-loaded and unordered), so bind whenever it appears instead:
+  // ctx.inject activates this branch once the service registers.
+  ctx.inject(['modelDirectories'], (scope) => {
+    controller.bindModelDirectories(scope.modelDirectories as ModelDirectoriesLike)
+  })
 
   // The host refreshes quotas on its own cadence (default 5min); the client
   // re-reads the snapshot every minute so the pill/panel pick it up. Cheap

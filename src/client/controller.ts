@@ -54,14 +54,19 @@ export interface CustomDraft {
   format: string
 }
 
+/** One session's model directory (structural face of the model-selection plugin's ModelDirectory). */
+export interface ModelDirectoryLike {
+  store: {
+    getSnapshot(): { current: { provider: string; model: string } | null; status?: string }
+    subscribe(fn: () => void): () => void
+  }
+  /** Pulls the session's advisory directory (current included) from the host. */
+  load?(): Promise<unknown>
+}
+
 /** Structural face of ctx.modelDirectories (avoids a hard type dependency). */
 export interface ModelDirectoriesLike {
-  directoryFor(sessionId: string): {
-    store: {
-      getSnapshot(): { current: { provider: string; model: string } | null }
-      subscribe(fn: () => void): () => void
-    }
-  }
+  directoryFor(sessionId: string): ModelDirectoryLike
 }
 
 /** Map a model-provider id onto a quota platform id (mirror of the host side). */
@@ -234,6 +239,11 @@ export class QuotaPanelController {
   /** Bind ctx.modelDirectories so the pill can follow the visible session's model. */
   bindModelDirectories(dirs: ModelDirectoriesLike | undefined): void {
     this.modelDirs = dirs
+    // Calls that arrived before the service was bound bailed out early;
+    // re-run the watch now that the directory resolver is available.
+    const sid = this.watchingSession
+    this.watchingSession = undefined
+    if (sid !== undefined) this.watchSession(sid)
   }
 
   /** Periodic light re-read of the host snapshot (the host refreshes upstreams on its own cadence). */
@@ -254,16 +264,23 @@ export class QuotaPanelController {
       this.patch({ sessionModel: null })
       return
     }
-    let store: { getSnapshot(): { current: { provider: string; model: string } | null }; subscribe(fn: () => void): () => void }
+    let directory: ModelDirectoryLike
     try {
-      store = dirs.directoryFor(sessionId).store
+      directory = dirs.directoryFor(sessionId)
     } catch {
       // Session without Agent-bound model RPCs (e.g. subagent views).
       this.patch({ sessionModel: null })
       return
     }
+    const store = directory.store
     const applyCurrent = (): void => this.patch({ sessionModel: store.getSnapshot().current ?? null })
     applyCurrent()
+    // A directory we resolved first never had its entries opened, so its
+    // store still sits at idle/current:null — pull the selection ourselves.
+    const snap = store.getSnapshot()
+    if (snap.current === null && snap.status === 'idle' && typeof directory.load === 'function') {
+      directory.load().catch(() => undefined)
+    }
     this.unwatchModel = store.subscribe(applyCurrent)
   }
 
