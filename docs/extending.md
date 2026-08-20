@@ -91,11 +91,10 @@ L2 MCP 平台             只有网页 Cookie 会话 → 做个 MCP 服务器 �
     loginFlows:
       - id: mysite
         url: 'https://mysite.com/login'
-        debugChrome: true        # 用带 CDP 调试端口的 Chrome 打开（供脚本抓 cookie）
         afterLogin: 'sh /path/to/sync-session.sh'
 ```
 
-注意：在网页上登录**不会**自动更新 MCP 服务器自己存的会话 cookie——所以 cookie 制平台需要 `afterLogin` 钩子把浏览器会话同步回去，否则重试还是失败。
+注意：在网页上登录**不会**自动更新 MCP 服务器自己存的会话 cookie——所以 cookie 制平台需要 `afterLogin` 钩子把浏览器会话同步回去，否则重试还是失败。同步脚本建议直接读**主浏览器**的 cookie 库（用户在自己浏览器里登录即可，不用另开窗口；macOS Chrome 示例见 `scripts/chrome_cookie.py` 思路：Keychain 取密钥解密 SQLite 里的 v10 cookie）；`debugChrome: true` 仅在你的同步脚本确实需要 CDP 时使用（会用带调试端口的独立 Chrome 打开登录页）。
 
 ## 想让我们内置某个平台？
 
