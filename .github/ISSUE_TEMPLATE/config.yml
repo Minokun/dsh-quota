@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 扩展指南 / Extending guide
+    url: https://github.com/Minokun/dsh-quota/blob/main/docs/extending.md
+    about: 想接入自己的平台？先看这里——大多数情况不用改代码 / Add your own platform without touching code
+  - name: 🛒 DSH 插件目录 / awesome-dsh-plugin
+    url: https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+    about: 更多 DeepSeek Harness 插件 / More DeepSeek Harness plugins

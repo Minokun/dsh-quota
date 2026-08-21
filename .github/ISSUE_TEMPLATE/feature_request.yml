@@ -1,0 +1,40 @@
+name: 💡 功能请求 / Feature Request
+description: 新平台支持、展示优化、交互想法 / New platform, display or UX ideas
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        也欢迎先看看 [扩展指南](https://github.com/Minokun/dsh-quota/blob/main/docs/extending.md)——很多平台不用改代码就能接入。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 类型 / Kind
+      options:
+        - 支持新平台 / Support a new platform
+        - 额度解析修正 / Quota parsing improvement
+        - 悬浮球/面板 UI / Pill or panel UI
+        - 登录同步 / Login sync
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 想要什么 / What do you want
+      description: 新平台请给出额度/余额接口文档或抓包线索（有 HAR 最佳，可用 har-to-mcp 直接转）。
+      placeholder: |
+        希望支持 XX 平台，它的额度接口是 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 使用场景 / Use case
+      description: 这个能力解决你什么痛点？（可选）
+    validations:
+      required: false

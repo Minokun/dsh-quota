@@ -1,0 +1,81 @@
+name: 🐛 Bug 报告 / Bug Report
+description: 插件行为异常、额度显示错误、登录同步失败等 / Something is broken
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！填写前请先确认你使用的是最新版本（插件市场「已安装」页可一键升级）。
+        Thanks for the report! Please make sure you are on the latest version first.
+
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本 / Plugin version
+      description: 设置 → 插件市场里显示的版本号 / e.g. 0.7.8
+      placeholder: 0.7.8
+    validations:
+      required: true
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本 / DSH version
+      description: 终端运行 `dsh --version` 的输出
+      placeholder: 1.x.x
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 出问题的平台 / Affected platform
+      multiple: true
+      options:
+        - Kimi Code
+        - DeepSeek
+        - 智谱 (z.ai / bigmodel)
+        - 通义千问 qianwen
+        - scnet 超算
+        - TokenRouter
+        - SupaWriter
+        - 自定义平台 (custom httpPlatforms)
+        - 悬浮球/面板 UI (pill / panel UI)
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么 / What happened
+      description: 期望行为 vs 实际行为。显示「?」、数字不对、按钮没反应都可以贴截图。
+      placeholder: |
+        期望：…
+        实际：…
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 打开面板
+        2. 点击刷新
+        3. …
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志 / Logs
+      description: |
+        面板里红色错误消息、或 DSH 日志中含 dsh-quota 的行。
+        ⚠️ 请务必打码 API key、cookie 等敏感信息！
+        Please redact API keys / cookies before pasting.
+      render: text
+    validations:
+      required: false
