@@ -116,13 +116,19 @@ const kimiCoding: FormatParser = (body) => {
   const wallet = (raw.boosterWallet ?? null) as Record<string, unknown> | null
   const walletBal = (wallet?.balance ?? {}) as Record<string, unknown>
 
+  // Right after a window reset the API omits `used` (it reports limit +
+  // remaining only) — derive it so the row never degrades to "? / 100".
+  const quota = (u: Record<string, unknown>): Pick<QuotaItem, 'used' | 'limit' | 'remaining' | 'percent'> => {
+    const limit = num(u.limit)
+    const remaining = num(u.remaining)
+    const used = num(u.used) ?? (limit !== undefined && remaining !== undefined ? Math.max(0, limit - remaining) : undefined)
+    return { used, limit, remaining, percent: pct(used, limit) }
+  }
+
   const items: QuotaItem[] = [
     {
       label: '周额度',
-      used: num(usage.used),
-      limit: num(usage.limit),
-      remaining: num(usage.remaining),
-      percent: pct(num(usage.used), num(usage.limit)),
+      ...quota(usage),
       resetAt: str(usage.resetTime),
     },
   ]
@@ -134,10 +140,7 @@ const kimiCoding: FormatParser = (body) => {
     const minutes = unit.includes('MINUTE') ? duration : unit.includes('HOUR') ? duration * 60 : duration
     items.push({
       label: `${Math.round(minutes)}m 窗口`,
-      used: num(detail.used),
-      limit: num(detail.limit),
-      remaining: num(detail.remaining),
-      percent: pct(num(detail.used), num(detail.limit)),
+      ...quota(detail),
       resetAt: str(detail.resetTime),
     })
   }
