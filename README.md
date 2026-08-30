@@ -44,6 +44,10 @@ dsh plugin --profile web add dsh-quota
 
 或打开 **设置 → 插件市场**，搜索 `dsh-quota` 一键安装。
 
+> **版本要求**：`0.8.0+` 需要 dsh `0.1.2-alpha.1` 及以上（浏览器端模块表改用
+> `@deepseek-ai/dsh-client-store` platform seed）。仍在用旧版 dsh（`0.1.0-rc` 系列）
+> 请锁定 `dsh-quota@0.7.x`。
+
 ## 配置（可选）
 
 在 composition 里给条目加 config：

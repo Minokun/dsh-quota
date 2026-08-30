@@ -5,7 +5,7 @@
  * @module dsh-quota/client
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { QuotaPanel } from './QuotaPanel.tsx'

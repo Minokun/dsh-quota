@@ -5,7 +5,7 @@
  * @module dsh-quota/client/controller
  */
 
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 
 /** One item row as rendered by the panel. */
 export interface PanelItem {
