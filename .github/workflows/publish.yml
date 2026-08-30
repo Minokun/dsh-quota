@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest # trusted publishing requires GitHub-hosted runners
     permissions:
       id-token: write # OIDC token for npm trusted publishing
-      contents: read
+      contents: write # create the GitHub Release for the pushed tag
     steps:
       - uses: actions/checkout@v4
 
@@ -44,3 +44,11 @@ jobs:
       # OIDC is auto-detected in GitHub Actions; provenance is generated
       # automatically for trusted publishes. No token/OTP needed.
       - run: npm publish --access public
+
+      # GitHub Release with auto-generated notes (commits since the previous
+      # tag). Runs after the npm publish so a failed publish never leaves a
+      # release pointing at nothing.
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
