@@ -236,6 +236,12 @@ export function QuotaPanel(props: QuotaPanelProps) {
                    <input className="dq-input" placeholder="名称（如 我的聚合站）" value={state.customDraft.label} onChange={(e) => { props.editCustom('label', e.currentTarget.value) }} />
                    <input className="dq-input" placeholder="接口地址（https://…，openai-billing 填站点根地址）" value={state.customDraft.endpoint} onChange={(e) => { props.editCustom('endpoint', e.currentTarget.value) }} />
                    <input className="dq-input" placeholder="凭证引用（如 MY_SITE_API_KEY，先存入 DSH 凭证）" value={state.customDraft.keyRef} onChange={(e) => { props.editCustom('keyRef', e.currentTarget.value) }} />
+                   {state.customDraft.format === 'newapi-account' && (
+                     <>
+                       <input className="dq-input" inputMode="numeric" placeholder="NewAPI 用户 ID（如 123）" value={state.customDraft.userId} onChange={(e) => { props.editCustom('userId', e.currentTarget.value) }} />
+                       <input className="dq-input" inputMode="numeric" placeholder="每美元额度点（默认 500000）" value={state.customDraft.quotaPerUnit} onChange={(e) => { props.editCustom('quotaPerUnit', e.currentTarget.value) }} />
+                     </>
+                   )}
                    <div className="dq-key-row">
                      <select className="dq-input" value={state.customDraft.format} onChange={(e) => { props.editCustom('format', e.currentTarget.value) }}>
                        {(state.formats.length > 0 ? state.formats : ['openai-billing']).map((f) => <option key={f} value={f}>{f}</option>)}
@@ -243,13 +249,13 @@ export function QuotaPanel(props: QuotaPanelProps) {
                      <button
                        type="button"
                        className="dq-btn dq-btn--primary"
-                       disabled={state.savingCustom || !state.customDraft.label.trim() || !state.customDraft.endpoint.trim() || !state.customDraft.keyRef.trim()}
+                       disabled={state.savingCustom || !state.customDraft.label.trim() || !state.customDraft.endpoint.trim() || !state.customDraft.keyRef.trim() || (state.customDraft.format === 'newapi-account' && (!/^[1-9]\d*$/.test(state.customDraft.userId.trim()) || !(Number(state.customDraft.quotaPerUnit) > 0)))}
                        onClick={() => { props.addCustom() }}
                      >
                        {state.savingCustom ? '…' : '添加'}
                      </button>
                    </div>
-                   <span className="dq-keys-note">key 先写进 DSH 凭证域（如 MY_SITE_API_KEY），这里只填引用名；格式选接口响应对应的解析器。</span>
+                   <span className="dq-keys-note">key 先写进 DSH 凭证域（如 MY_SITE_API_KEY），这里只填引用名；newapi-account 应保存系统访问令牌，而不是模型调用的 sk-* key。</span>
                  </>
                )}
              </div>

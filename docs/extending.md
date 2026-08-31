@@ -43,13 +43,21 @@ L2 MCP 平台             只有网页 Cookie 会话 → 做个 MCP 服务器 �
         endpoint: https://hub.example.com      # openai-billing 填站点根地址
         keyRef: MY_HUB_API_KEY
         format: openai-billing
+      - id: my-newapi-account
+        label: 我的 NewAPI 账号
+        endpoint: https://newapi.example.com
+        keyRef: NEWAPI_ACCESS_TOKEN          # 系统访问令牌，不是 sk-* key
+        userId: '123'
+        quotaPerUnit: 500000                 # 站点自定义过时按实际值修改
+        format: newapi-account
 ```
 
 ### 内置格式（format）一览
 
 | format | 适用 | 端点约定 |
 | --- | --- | --- |
-| `openai-billing` | one-api / new-api 系聚合站 | 站点根地址，自动调 `/v1/dashboard/billing/subscription` + `/usage` |
+| `openai-billing` | one-api / new-api 单 key 额度 | 站点根地址，自动调 `/v1/dashboard/billing/subscription` + `/usage`；`total_usage` 按美分换算 |
+| `newapi-account` | NewAPI 整个账号余额 | 站点根地址，自动调 `/api/user/self`；需系统访问令牌、用户 ID，可配置 `quotaPerUnit`（默认 500000） |
 | `deepseek-balance` | `balance_infos[]` 形响应 | DeepSeek 官方及兼容站 |
 | `moonshot-balance` | `data.total_balance` 形 | Moonshot 及兼容站 |
 | `siliconflow-balance` | `data.balance` 形 | SiliconFlow 及兼容站 |

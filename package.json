@@ -43,6 +43,7 @@
     "build": "tsdown && node scripts/check-client-id.mjs",
     "prepare": "tsdown",
     "dev": "tsdown --watch",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "link-harness": "sh scripts/link-harness.sh"
   },

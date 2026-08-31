@@ -44,6 +44,8 @@ export interface CustomPlatform {
   endpoint: string
   keyRef: string
   format: string
+  userId?: string
+  quotaPerUnit?: number
 }
 
 /** Draft of the add-custom-platform form. */
@@ -52,6 +54,8 @@ export interface CustomDraft {
   endpoint: string
   keyRef: string
   format: string
+  userId: string
+  quotaPerUnit: string
 }
 
 /** One session's model directory (structural face of the model-selection plugin's ModelDirectory). */
@@ -203,7 +207,7 @@ const INITIAL: QuotaPanelState = {
   customPlatforms: [],
   formats: [],
   showCustom: false,
-  customDraft: { label: '', endpoint: '', keyRef: '', format: 'openai-billing' },
+  customDraft: { label: '', endpoint: '', keyRef: '', format: 'openai-billing', userId: '', quotaPerUnit: '500000' },
   savingCustom: false,
   currentModel: { provider: '', model: '', platform: '', summary: '' },
   sessionModel: null,
@@ -379,12 +383,30 @@ export class QuotaPanelController {
       this.patch({ formError: '名称、接口地址、凭证引用都要填' })
       return
     }
+    const isNewApiAccount = draft.format === 'newapi-account'
+    const quotaPerUnit = Number(draft.quotaPerUnit)
+    if (isNewApiAccount && !/^[1-9]\d*$/.test(draft.userId.trim())) {
+      this.patch({ formError: 'NewAPI 用户 ID 必须是正整数' })
+      return
+    }
+    if (isNewApiAccount && (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0)) {
+      this.patch({ formError: 'NewAPI 每美元额度点必须是正数' })
+      return
+    }
     // Derive the id from the label: lowercase slug, dash-separated.
     const id = draft.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'custom'
     this.patch({ savingCustom: true, formError: '' })
     try {
-      await request('/platforms', { id, label: draft.label.trim(), endpoint: draft.endpoint.trim(), keyRef: draft.keyRef.trim(), format: draft.format })
-      this.patch({ customDraft: { label: '', endpoint: '', keyRef: '', format: this.store.getSnapshot().customDraft.format } })
+      await request('/platforms', {
+        id,
+        label: draft.label.trim(),
+        endpoint: draft.endpoint.trim(),
+        keyRef: draft.keyRef.trim(),
+        format: draft.format,
+        userId: isNewApiAccount ? draft.userId.trim() : '',
+        quotaPerUnit: isNewApiAccount ? quotaPerUnit : 500000,
+      })
+      this.patch({ customDraft: { label: '', endpoint: '', keyRef: '', format: this.store.getSnapshot().customDraft.format, userId: '', quotaPerUnit: '500000' } })
       await this.reload()
     } catch (error) {
       this.patch({ formError: error instanceof Error ? error.message : String(error) })

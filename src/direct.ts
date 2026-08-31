@@ -17,7 +17,7 @@
  * @module dsh-quota/direct
  */
 
-import type { ProviderSnapshot, QuotaItem } from './config.ts'
+import type { CustomHttpPlatform, ProviderSnapshot, QuotaItem } from './config.ts'
 
 /** One direct platform adapter. */
 export interface DirectAdapter {
@@ -54,6 +54,14 @@ function str(v: unknown): string | undefined {
 function pct(used: number | undefined, limit: number | undefined): number | undefined {
   if (used === undefined || limit === undefined || limit <= 0) return undefined
   return Number(((used / limit) * 100).toFixed(1))
+}
+
+const OPENAI_BILLING_CENTS_PER_DOLLAR = 100
+const NEWAPI_UNLIMITED_HARD_LIMIT = 100_000_000
+const DEFAULT_NEWAPI_QUOTA_PER_UNIT = 500_000
+
+function usd(value: number): string {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
 }
 
 function isoFromMs(v: unknown): string | undefined {
@@ -332,7 +340,7 @@ export const FORMATS: Record<string, FormatParser> = {
 }
 
 /** Formats offered in the panel for user-declared custom HTTP platforms. */
-export const CUSTOM_FORMATS = ['openai-billing', 'deepseek-balance', 'moonshot-balance', 'siliconflow-balance', 'openrouter-credits', 'stepfun-accounts', 'xai-credits'] as const
+export const CUSTOM_FORMATS = ['openai-billing', 'newapi-account', 'deepseek-balance', 'moonshot-balance', 'siliconflow-balance', 'openrouter-credits', 'stepfun-accounts', 'xai-credits'] as const
 
 // ── Catalog ──────────────────────────────────────────────────────────────────
 
@@ -416,7 +424,7 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
 export const ALL_DIRECT_REFS: string[] = [...new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].flatMap((a) => [...a.keyRefs, ...a.envKeys]))]
 
 /** Fetch shape for one user-declared custom HTTP platform. */
-export function customHttpFetch(platform: { id: string; label: string; endpoint: string; format: string }): (key: string, signal?: AbortSignal) => Promise<ProviderSnapshot> {
+export function customHttpFetch(platform: CustomHttpPlatform): (key: string, signal?: AbortSignal) => Promise<ProviderSnapshot> {
   if (platform.format === 'openai-billing') {
     return async (key, signal) => {
       const base = platform.endpoint.replace(/\/+$/, '')
@@ -424,19 +432,52 @@ export function customHttpFetch(platform: { id: string; label: string; endpoint:
       const sub = await getJson(`${base}/v1/dashboard/billing/subscription`, headers, signal) as Record<string, unknown>
       const usage = await getJson(`${base}/v1/dashboard/billing/usage`, headers, signal) as Record<string, unknown>
       const limit = num(sub.hard_limit_usd)
-      const used = num(usage.total_usage)
-      if (limit === undefined || used === undefined) throw new Error('openai-billing: missing hard_limit_usd / total_usage')
+      const usedCents = num(usage.total_usage)
+      if (limit === undefined || usedCents === undefined) throw new Error('openai-billing: missing hard_limit_usd / total_usage')
+      // The legacy OpenAI-compatible billing contract reports total_usage in
+      // cents while hard_limit_usd is in dollars. NewAPI uses 100000000 as
+      // the hard-limit sentinel for an unlimited token.
+      const used = usedCents / OPENAI_BILLING_CENTS_PER_DOLLAR
+      const unlimited = limit >= NEWAPI_UNLIMITED_HARD_LIMIT
+      const remaining = Math.max(0, limit - used)
       return {
         id: platform.id,
         label: platform.label,
         status: 'ok',
         via: 'api',
-        items: [{
-          label: '额度 (USD)',
-          percent: pct(used, limit),
-          display: `$${used.toFixed(2)} / $${limit.toFixed(2)}（剩 $${(limit - used).toFixed(2)}）`,
-        }],
+        items: unlimited
+          ? [{ label: '额度 (USD)', display: `已用 $${usd(used)} · 无限额度` }]
+          : [{
+              label: '额度 (USD)',
+              used,
+              limit,
+              remaining,
+              percent: pct(used, limit),
+              display: `$${usd(used)} / $${usd(limit)}（剩 $${usd(remaining)}）`,
+            }],
       }
+    }
+  }
+  if (platform.format === 'newapi-account') {
+    return async (key, signal) => {
+      const userId = platform.userId?.trim() ?? ''
+      if (!/^[1-9]\d*$/.test(userId)) throw new Error('newapi-account: userId must be a positive integer')
+      const quotaPerUnit = platform.quotaPerUnit ?? DEFAULT_NEWAPI_QUOTA_PER_UNIT
+      if (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) throw new Error('newapi-account: quotaPerUnit must be positive')
+      const base = platform.endpoint.replace(/\/+$/, '')
+      const body = await getJson(`${base}/api/user/self`, {
+        Authorization: `Bearer ${key}`,
+        'New-Api-User': userId,
+      }, signal) as Record<string, unknown>
+      if (body.success === false) throw new Error(`newapi-account: ${str(body.message) ?? 'request failed'}`)
+      const data = (body.data ?? body) as Record<string, unknown>
+      const balanceQuota = num(data.quota)
+      const usedQuota = num(data.used_quota)
+      if (balanceQuota === undefined && usedQuota === undefined) throw new Error('newapi-account: missing data.quota / data.used_quota')
+      const items: QuotaItem[] = []
+      if (balanceQuota !== undefined) items.push({ label: '账户余额 (USD)', display: `$${usd(balanceQuota / quotaPerUnit)}` })
+      if (usedQuota !== undefined) items.push({ label: '累计已用 (USD)', display: `$${usd(usedQuota / quotaPerUnit)}` })
+      return { id: platform.id, label: platform.label, status: 'ok', via: 'api', items }
     }
   }
   const parser = FORMATS[platform.format]
