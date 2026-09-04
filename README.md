@@ -83,6 +83,12 @@ pnpm typecheck
 sh scripts/reload.sh   # 构建；Host 改动重启 dsh 生效，界面改动刷新页面生效
 ```
 
+## 交流群
+
+扫码加入 QQ 交流群，一起反馈问题、分享用法、共建插件——欢迎一起来建设！
+
+<img src="https://raw.githubusercontent.com/Minokun/dsh-quota/main/docs/qq-qrcode.jpg" alt="QQ 交流群二维码" width="240" />
+
 ## 发布（maintainer）
 
 发版走 **npm Trusted Publishing（GitHub Actions OIDC）**——不需要本地 token 或 2FA 验证码：
