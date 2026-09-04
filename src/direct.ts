@@ -463,9 +463,12 @@ export function customHttpFetch(platform: CustomHttpPlatform): (key: string, sig
               label: '额度 (USD)',
               used,
               limit,
+              // The panel appends 剩{remaining} itself whenever percent and
+              // remaining are both set — keep it out of display to avoid
+              // rendering the remaining amount twice.
               remaining,
               percent: pct(used, limit),
-              display: `$${usd(used)} / $${usd(limit)}（剩 $${usd(remaining)}）`,
+              display: `$${usd(used)} / $${usd(limit)}`,
             }],
       }
     }

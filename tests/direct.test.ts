@@ -30,7 +30,8 @@ test('openai-billing converts total_usage cents to dollars', async () => {
   ])
   assert.equal(result.items[0]?.used, 3.5)
   assert.equal(result.items[0]?.remaining, 16.5)
-  assert.equal(result.items[0]?.display, '$3.50 / $20.00（剩 $16.50）')
+  // display stays free of the remaining amount — the panel appends 剩{remaining} itself.
+  assert.equal(result.items[0]?.display, '$3.50 / $20.00')
 })
 
 test('openai-billing renders NewAPI unlimited-token sentinel without a fake limit', async () => {

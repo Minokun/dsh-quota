@@ -397,14 +397,14 @@ export class QuotaPanelController {
     const id = draft.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'custom'
     this.patch({ savingCustom: true, formError: '' })
     try {
+      // NewAPI account fields go only with the format that consumes them.
       await request('/platforms', {
         id,
         label: draft.label.trim(),
         endpoint: draft.endpoint.trim(),
         keyRef: draft.keyRef.trim(),
         format: draft.format,
-        userId: isNewApiAccount ? draft.userId.trim() : '',
-        quotaPerUnit: isNewApiAccount ? quotaPerUnit : 500000,
+        ...(isNewApiAccount ? { userId: draft.userId.trim(), quotaPerUnit } : {}),
       })
       this.patch({ customDraft: { label: '', endpoint: '', keyRef: '', format: this.store.getSnapshot().customDraft.format, userId: '', quotaPerUnit: '500000' } })
       await this.reload()

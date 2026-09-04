@@ -442,7 +442,13 @@ export class QuotaController implements QuotaControllerFace {
     if (builtinIds.has(id)) throw new Error(`id ${id} 与内置平台重复`)
     const current = this.state().httpPlatforms
     if (current.some((p) => p.id === id)) throw new Error(`id ${id} 已存在`)
-    await this.patch({ httpPlatforms: [...current, { id, label, endpoint, keyRef, format, userId, quotaPerUnit }] })
+    // Only persist the NewAPI account fields for the format that consumes
+    // them — other custom platforms should not carry dead userId/quotaPerUnit
+    // entries in the settings file.
+    const record: CustomHttpPlatform = format === 'newapi-account'
+      ? { id, label, endpoint, keyRef, format, userId, quotaPerUnit }
+      : { id, label, endpoint, keyRef, format }
+    await this.patch({ httpPlatforms: [...current, record] })
     await this.refresh()
   }
 
