@@ -11,11 +11,49 @@
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import { useEffect } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { platformForProvider, summarizeItems, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 
 /** Props the renderer binds for the quota panel. */
 export type QuotaPanelProps = PropsRuntime<'shell.overlay'> & InjectFace<QuotaPanelFace>
+
+/** localStorage key for the user-dragged pill position. */
+const POS_KEY = 'dsh-quota:pill-pos'
+/** Pointer travel below this many px still counts as a click, not a drag. */
+const DRAG_THRESHOLD_PX = 5
+/** Viewport margin kept around the pill while dragging/clamping. */
+const POS_MARGIN = 4
+
+/**
+ * Pill top-left plus its measured size. The size lets both anchor modes
+ * (left/top when the panel drops below, right/bottom when it rises above)
+ * keep the pill pinned at the exact same spot while dragging.
+ */
+interface PillPos { x: number; y: number; w: number; h: number }
+
+/** Keep the pill fully inside the viewport. */
+function clampPillPos(p: PillPos): PillPos {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  return {
+    ...p,
+    x: Math.min(Math.max(p.x, POS_MARGIN), Math.max(POS_MARGIN, vw - p.w - POS_MARGIN)),
+    y: Math.min(Math.max(p.y, POS_MARGIN), Math.max(POS_MARGIN, vh - p.h - POS_MARGIN)),
+  }
+}
+
+/** Read the stored pill position; a missing/corrupt entry falls back to the default corner. */
+function loadPillPos(): PillPos | null {
+  try {
+    const raw = window.localStorage.getItem(POS_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as Partial<PillPos>
+    if (typeof p.x === 'number' && typeof p.y === 'number') {
+      return clampPillPos({ x: p.x, y: p.y, w: p.w ?? 160, h: p.h ?? 36 })
+    }
+  } catch { /* corrupted entry — fall back to the default corner */ }
+  return null
+}
 
 /** Pill dot color from the provider status set. */
 function dotClass(state: QuotaPanelState): string {
@@ -101,8 +139,113 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
+  // ── 可拖拽悬浮球 ────────────────────────────────────────────────
+  // pos 为 null 时走 CSS 默认右下角；一旦拖动过就记录小球左上角坐标
+  // （localStorage 持久化），之后用内联样式定位。小球在上半屏时面板
+  // 向下展开（pill 渲染在最前、left/top 锚定），下半屏时向上展开
+  // （pill 渲染在最后、right/bottom 锚定），两种锚定都保证小球不动。
+  const [pos, setPos] = useState<PillPos | null>(() => (typeof window === 'undefined' ? null : loadPillPos()))
+  const [dragging, setDragging] = useState(false)
+  const pillRef = useRef<HTMLButtonElement | null>(null)
+  const dragRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    base: PillPos
+    latest: PillPos
+    moved: boolean
+  } | null>(null)
+  /** Drag end still fires a click on the pill — swallow exactly one. */
+  const suppressClickRef = useRef(false)
+
+  // Re-measure the pill after mount and on viewport resize, so a stale
+  // stored size (model-name length changed) never pushes it off-screen.
+  useEffect(() => {
+    const measure = (): void => {
+      const rect = pillRef.current?.getBoundingClientRect()
+      if (!rect) return
+      setPos((p) => (p ? clampPillPos({ x: rect.left, y: rect.top, w: rect.width, h: rect.height }) : p))
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => { window.removeEventListener('resize', measure) }
+  }, [])
+
+  const onPillPointerDown = (e: ReactPointerEvent<HTMLButtonElement>): void => {
+    if (e.button !== 0) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const base: PillPos = { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
+    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, base, latest: base, moved: false }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const onPillPointerMove = (e: ReactPointerEvent<HTMLButtonElement>): void => {
+    const d = dragRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    const dx = e.clientX - d.startX
+    const dy = e.clientY - d.startY
+    if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+    d.moved = true
+    setDragging(true)
+    const next = clampPillPos({ ...d.base, x: d.base.x + dx, y: d.base.y + dy })
+    d.latest = next
+    setPos(next)
+  }
+
+  const onPillPointerUp = (e: ReactPointerEvent<HTMLButtonElement>): void => {
+    const d = dragRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    dragRef.current = null
+    setDragging(false)
+    if (d.moved) {
+      suppressClickRef.current = true
+      try { window.localStorage.setItem(POS_KEY, JSON.stringify(d.latest)) } catch { /* private mode */ }
+    }
+  }
+
+  // 上半屏 → 面板向下展开（pill 最前 + left/top 锚定）；下半屏（含默认
+  // 位置）→ 面板向上展开（pill 最后 + right/bottom 锚定）。
+  const flip = pos !== null && pos.y < window.innerHeight / 2
+  const rootStyle: CSSProperties | undefined = pos === null
+    ? undefined
+    : flip
+      // flip 模式下必须左对齐：根元素宽度由更宽的面板撑开，右对齐会把
+      // 小球推离拖拽落点。
+      ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto', alignItems: 'flex-start' }
+      : { right: window.innerWidth - pos.x - pos.w, bottom: window.innerHeight - pos.y - pos.h }
+
+  const pill = (
+    <button
+      ref={pillRef}
+      type="button"
+      className={`dq-pill${dragging ? ' dq-pill--dragging' : ''}`}
+      // DOM 顺序固定为最后（面板向上展开）；flip 时用 flex order 把小球
+      // 视觉移到最前（面板向下展开），避免跨中线拖拽时 DOM 重挂导致
+      // pointer capture 丢失。
+      style={flip ? { order: -1 } : undefined}
+      onPointerDown={onPillPointerDown}
+      onPointerMove={onPillPointerMove}
+      onPointerUp={onPillPointerUp}
+      onPointerCancel={onPillPointerUp}
+      onClick={() => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false
+          return
+        }
+        props.toggle()
+      }}
+      title={`${summary
+        ? `${modelFrom}：${summary}`
+        : '查看各平台会员额度'}（可拖拽移动）`}
+    >
+      <span className={`dq-dot ${dotClass(state)}`} />
+      <span className="dq-pill-name">{modelName || '会员额度'}</span>
+      {summary && <span className="dq-pill-model">{summary}</span>}
+    </button>
+  )
+
   return (
-    <div className="dq-root">
+    <div className="dq-root" style={rootStyle}>
       {state.loginAlerts.map((a) => (
         <div key={a.id} className="dq-toast" role="alert">
           <span className="dq-toast-text">⚠️ {a.label} 登录已失效</span>
@@ -260,18 +403,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
           </div>
         </div>
       )}
-      <button
-        type="button"
-        className="dq-pill"
-        onClick={() => { props.toggle() }}
-        title={summary
-          ? `${modelFrom}：${summary}`
-          : '查看各平台会员额度'}
-      >
-        <span className={`dq-dot ${dotClass(state)}`} />
-        <span className="dq-pill-name">{modelName || '会员额度'}</span>
-        {summary && <span className="dq-pill-model">{summary}</span>}
-      </button>
+      {pill}
     </div>
   )
 }

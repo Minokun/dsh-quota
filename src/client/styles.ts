@@ -9,7 +9,8 @@ export const STYLE_TAG_ID = 'dsh-quota/panel'
 export const PANEL_CSS = `
 .dq-root { position: fixed; right: 16px; bottom: 16px; z-index: 9999; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; font-family: inherit; }
 .dq-pill {
-  display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 8px; cursor: grab; user-select: none;
+  touch-action: none;
   padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
   background: var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92)); color: var(--dsw-alias-label-primary, #eee);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
@@ -17,6 +18,8 @@ export const PANEL_CSS = `
   transition: transform 0.12s ease, border-color 0.12s ease;
 }
 .dq-pill:hover { transform: translateY(-1px); border-color: var(--dsw-alias-brand-primary, #5b6cff); }
+.dq-pill--dragging { cursor: grabbing; transition: none; }
+.dq-pill--dragging:hover { transform: none; }
 .dq-pill .dq-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dq-dot--ok { background: #3ddc84; box-shadow: 0 0 6px rgba(61, 220, 132, 0.7); }
 .dq-dot--warn { background: #f5a623; box-shadow: 0 0 6px rgba(245, 166, 35, 0.7); }
