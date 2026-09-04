@@ -11,9 +11,10 @@
  *
  * Catalog endpoints and response shapes follow the research verified by
  * CodexBar (docs/zai.md) and dsh-quota-panel (MIT) — window semantics for the
- * z.ai quota API included: the SHORTEST TOKENS_LIMIT is the 5-hour session
- * window, the LONGEST is the weekly window, and TIME_LIMIT is the monthly
- * search/MCP-tool lane (its usageDetails are search-prime / web-reader / zread).
+ * z.ai quota API included (from the z.ai frontend source): TOKENS_LIMIT
+ * unit=3 is the N-hour session window, unit=6 is the weekly window, and
+ * TIME_LIMIT is the monthly search/MCP-tool lane (its usageDetails are
+ * search-prime / web-reader / zread).
  * @module dsh-quota/direct
  */
 
@@ -68,8 +69,12 @@ export type FormatParser = (body: unknown) => QuotaItem[]
 
 /**
  * z.ai quota API (GLM Coding Plan / Z.AI / ZhiPu GLM). Window semantics per
- * CodexBar's mapping: shortest TOKENS_LIMIT = 5h session window, longest =
- * weekly; TIME_LIMIT = monthly search/MCP-tool lane.
+ * the z.ai frontend source: TOKENS_LIMIT unit=3 = the N-hour session window
+ * (number = hours, typically 5), TOKENS_LIMIT unit=6 = the weekly window;
+ * TIME_LIMIT = monthly search/MCP-tool lane (its usageDetails are
+ * search-prime / web-reader / zread). Do NOT infer the window from
+ * unit*number ordering — unit=6/number=1 (week) sorts below unit=3/number=5
+ * (5h) and the two rows end up swapped.
  */
 const zaiCoding: FormatParser = (body) => {
   const raw = body as Record<string, unknown>
@@ -77,9 +82,7 @@ const zaiCoding: FormatParser = (body) => {
   const data = (raw.data ?? raw) as Record<string, unknown>
   const limits = Array.isArray(data.limits) ? data.limits as Array<Record<string, unknown>> : []
   if (limits.length === 0) throw new Error('data.limits is empty')
-  const tokens = limits
-    .filter((l) => str(l.type) === 'TOKENS_LIMIT')
-    .sort((a, b) => (num(a.unit) ?? 0) * (num(a.number) ?? 1) - (num(b.unit) ?? 0) * (num(b.number) ?? 1))
+  const tokens = limits.filter((l) => str(l.type) === 'TOKENS_LIMIT')
   const time = limits.find((l) => str(l.type) === 'TIME_LIMIT')
   const items: QuotaItem[] = []
   const tokenItem = (l: Record<string, unknown>, label: string): void => {
@@ -91,8 +94,17 @@ const zaiCoding: FormatParser = (body) => {
       resetAt: isoFromMs(l.nextResetTime),
     })
   }
-  if (tokens.length > 0) tokenItem(tokens[0], '5 小时窗口')
-  if (tokens.length > 1) tokenItem(tokens[tokens.length - 1], '本周窗口')
+  // unit 语义（z.ai 前端源码）：3 = 小时窗（number 为小时数），6 = 周窗。
+  const hourly = tokens.filter((l) => num(l.unit) === 3)
+  const weekly = tokens.filter((l) => num(l.unit) === 6)
+  const known = new Set([...hourly, ...weekly])
+  for (const l of hourly) tokenItem(l, `${num(l.number) ?? 5} 小时窗口`)
+  for (const l of weekly) tokenItem(l, '本周窗口')
+  // 未知 unit 的兜底：按 unit*number 时长排序，给通用标签。
+  tokens
+    .filter((l) => !known.has(l))
+    .sort((a, b) => (num(a.unit) ?? 0) * (num(a.number) ?? 1) - (num(b.unit) ?? 0) * (num(b.number) ?? 1))
+    .forEach((l, i) => { tokenItem(l, i === 0 && hourly.length === 0 ? '5 小时窗口' : `Token 窗口 ${i + 1}`) })
   if (time) {
     const used = num(time.currentValue)
     const limit = num(time.usage)
