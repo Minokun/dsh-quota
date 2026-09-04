@@ -75,6 +75,8 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
           endpoint: stringField(body, 'endpoint') ?? '',
           keyRef: stringField(body, 'keyRef') ?? '',
           format: stringField(body, 'format') ?? '',
+          userId: stringField(body, 'userId') ?? '',
+          quotaPerUnit: numberField(body, 'quotaPerUnit'),
         })
         return send(res, 200, { ok: true, httpPlatforms: quota.state().httpPlatforms })
       }
@@ -115,4 +117,9 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 function stringField(body: Record<string, unknown>, key: string): string | undefined {
   const v = body[key]
   return typeof v === 'string' ? v : undefined
+}
+
+function numberField(body: Record<string, unknown>, key: string): number | undefined {
+  const v = body[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
 }

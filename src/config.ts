@@ -83,6 +83,10 @@ export interface CustomHttpPlatform {
   keyRef: string
   /** One of direct.FORMATS / CUSTOM_FORMATS. */
   format: string
+  /** NewAPI account id sent as New-Api-User (newapi-account only). */
+  userId?: string
+  /** NewAPI internal quota units per displayed USD (default 500000). */
+  quotaPerUnit?: number
 }
 
 /** One platform row in the panel. */
@@ -153,6 +157,8 @@ export const Config: z<Config> = z.object({
     endpoint: z.string(),
     keyRef: z.string(),
     format: z.string(),
+    userId: z.string().default(''),
+    quotaPerUnit: z.number().default(500000),
   })).default([]),
   loginFlows: z.array(z.object({
     id: z.string(),

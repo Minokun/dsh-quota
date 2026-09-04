@@ -432,13 +432,17 @@ export class QuotaController implements QuotaControllerFace {
     const keyRef = (platform.keyRef ?? '').trim()
     if (!/^[A-Z][A-Z0-9_]*$/.test(keyRef)) throw new Error('凭证引用必须是大写下划线命名（如 MY_PLATFORM_API_KEY）')
     const format = (platform.format ?? '').trim()
-    if (format !== 'openai-billing' && !FORMATS[format]) throw new Error(`未知格式：${format}`)
+    if (format !== 'openai-billing' && format !== 'newapi-account' && !FORMATS[format]) throw new Error(`未知格式：${format}`)
     if (!(CUSTOM_FORMATS as readonly string[]).includes(format)) throw new Error(`格式 ${format} 不适用于自定义平台`)
+    const userId = (platform.userId ?? '').trim()
+    const quotaPerUnit = platform.quotaPerUnit ?? 500000
+    if (format === 'newapi-account' && !/^[1-9]\d*$/.test(userId)) throw new Error('NewAPI 用户 ID 必须是正整数')
+    if (format === 'newapi-account' && (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0)) throw new Error('NewAPI 每美元额度点必须是正数')
     const builtinIds = new Set([...DIRECT_ADAPTERS, ...CATALOG_EXTRA].map((a) => a.id))
     if (builtinIds.has(id)) throw new Error(`id ${id} 与内置平台重复`)
     const current = this.state().httpPlatforms
     if (current.some((p) => p.id === id)) throw new Error(`id ${id} 已存在`)
-    await this.patch({ httpPlatforms: [...current, { id, label, endpoint, keyRef, format }] })
+    await this.patch({ httpPlatforms: [...current, { id, label, endpoint, keyRef, format, userId, quotaPerUnit }] })
     await this.refresh()
   }
 
