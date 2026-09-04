@@ -89,18 +89,6 @@ sh scripts/reload.sh   # 构建；Host 改动重启 dsh 生效，界面改动刷
 
 <img src="https://raw.githubusercontent.com/Minokun/dsh-quota/main/docs/qq-qrcode.jpg" alt="QQ 交流群二维码" width="240" />
 
-## 发布（maintainer）
-
-发版走 **npm Trusted Publishing（GitHub Actions OIDC）**——不需要本地 token 或 2FA 验证码：
-
-```sh
-sh scripts/release.sh          # 默认 patch；也可 sh scripts/release.sh minor / 0.8.0
-```
-
-流程：`npm version` 升版本并打 tag → 推送触发 `.github/workflows/publish.yml` → CI 里构建（含门禁）→ OIDC 认证发布，自带 SLSA provenance。动作日志见 [Actions](https://github.com/Minokun/dsh-quota/actions)。
-
-绑定配置（一次性，已绑好）：npmjs.com 包设置 → Trusted Publisher → GitHub Actions → `Minokun` / `dsh-quota` / `publish.yml` / 允许 `npm publish`。
-
 ## License
 
 MIT
