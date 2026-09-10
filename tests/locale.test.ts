@@ -12,6 +12,7 @@ const KEYS: LocaleKey[] = [
   'status.ok', 'status.error', 'status.missing-key', 'status.missing-mcp',
   'source.env', 'source.project-env', 'source.user-env', 'source.dsh',
   'provider.synced', 'provider.syncedTitle',
+  'probe.run', 'probe.title', 'probe.running', 'probe.ok', 'probe.fail',
   'toast.loginExpired', 'toast.retry', 'toast.login', 'toast.dismiss',
   'login.done', 'login.go',
   'item.remaining', 'eta.title', 'eta.minutes', 'eta.hours', 'eta.days',

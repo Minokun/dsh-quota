@@ -386,7 +386,23 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   <span className="dq-provider-name">{p.label}</span>
                   {p.via && <span className={`dq-badge ${p.via === 'api' ? 'dq-badge--api' : 'dq-badge--mcp'}`}>{p.via === 'api' ? 'API' : 'MCP'}</span>}
                   <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
+                  <button
+                    type="button"
+                    className="dq-btn dq-btn--ghost dq-probe"
+                    disabled={busy || state.probing === p.id}
+                    title={t('probe.title')}
+                    onClick={() => { props.probe(p.id) }}
+                  >
+                    {state.probing === p.id ? '…' : t('probe.run')}
+                  </button>
                 </div>
+                {state.probeResults[p.id] && (
+                  <span className={`dq-probe-result ${state.probeResults[p.id]!.ok ? 'dq-probe-result--ok' : 'dq-probe-result--err'}`}>
+                    {state.probeResults[p.id]!.ok
+                      ? t('probe.ok', { ms: state.probeResults[p.id]!.ms })
+                      : t('probe.fail', { message: state.probeResults[p.id]!.message ?? '' })}
+                  </span>
+                )}
                 {p.via === 'api' && p.keyRef && (
                   <span className="dq-provider-key" title={t('provider.syncedTitle', { ref: p.keyRef, source: sourceText(p.keySource, t) })}>
                     {t('provider.synced', { ref: p.keyRef, source: sourceText(p.keySource, t) })}

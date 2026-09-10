@@ -172,6 +172,10 @@ export interface QuotaPanelState {
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
+  /** 正在测活的平台 id。 */
+  probing: string
+  /** 平台 id → 最近一次测活结果（延迟/错误）。 */
+  probeResults: Record<string, { ok: boolean; ms: number; message?: string }>
   /** 面板文案语言（跟随 DSH locale 服务，服务缺失时按浏览器语言）。 */
   lang: Lang
 }
@@ -201,6 +205,8 @@ export interface QuotaPanelFace {
   loginRetry(platform: string): void
   /** Dismiss one login alert until the platform recovers and fails again. */
   dismissLogin(platform: string): void
+  /** Run a one-shot connectivity probe for one platform card. */
+  probe(platform: string): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -228,6 +234,8 @@ const INITIAL: QuotaPanelState = {
   providerKeyRefs: {},
   loginAlerts: [],
   alertPercent: 85,
+  probing: '',
+  probeResults: {},
   lang: browserLang(),
 }
 
@@ -350,6 +358,7 @@ export class QuotaPanelController {
       loginStart: (platform) => { void this.loginStart(platform) },
       loginRetry: (platform) => { void this.loginRetry(platform) },
       dismissLogin: (platform) => { this.dismissLogin(platform) },
+      probe: (platform) => { void this.probe(platform) },
     }
   }
 
@@ -392,6 +401,24 @@ export class QuotaPanelController {
   private dismissLogin(platform: string): void {
     this.dismissedAlerts.add(platform)
     this.patch({ loginAlerts: this.store.getSnapshot().loginAlerts.filter((a) => a.id !== platform) })
+  }
+
+  /** One-shot connectivity probe: latency on success, upstream error on failure. */
+  private async probe(platform: string): Promise<void> {
+    this.patch({ probing: platform })
+    try {
+      const result = await request<{ ok: boolean; ms: number; message?: string }>('/probe', { platform }, this.lang())
+      this.patch({ probeResults: { ...this.store.getSnapshot().probeResults, [platform]: result } })
+    } catch (error) {
+      this.patch({
+        probeResults: {
+          ...this.store.getSnapshot().probeResults,
+          [platform]: { ok: false, ms: 0, message: error instanceof Error ? error.message : String(error) },
+        },
+      })
+    } finally {
+      this.patch({ probing: '' })
+    }
   }
 
   /** Open the platform's login page; the button then flips to 重试. */

@@ -65,7 +65,11 @@
   消耗；卡片上用 note 说明「Admin API 无余额接口」。目录条目新增 `auth`/`headers`/`buildUrl`/`note`
   能力，为后续同类平台铺路。测试：tests/costs.test.ts（端点 URL、鉴权头、分→美元换算、空桶报错）。
   仍未做：Codex(ChatGPT 订阅额度，需要读 ~/.codex/auth.json 的 OAuth token，属本地凭据型适配器)。
-- **阶段 4 · 体验补强**：一键测试连接 + 毫秒延迟；自定义端点安全加固（DNS/TLS/大小上限）。
+- **阶段 4 · 体验补强 ✅ 已完成（0.13.0）**：卡片「测」按钮一键测活（`/api/probe`，
+  毫秒延迟或上游错误，只读）；自定义端点安全加固——`assertPublicHttpsUrl()` 校验公网 HTTPS、
+  拒绝内嵌凭据/查询串/内网与保留地址，`getJson()` 拒绝跟随跳转并限制响应 256 KiB。
+  测试：tests/security.test.ts（公网/内网/保留地址边界）+ tests/locale.test.ts 覆盖新文案。
+  未做（可选）：DNS 解析后二次校验 + TLS 地址锁定（Lottle7 级别），需要 node:https 直连取代 fetch。
 - **远期**：用量台账 + CNY 成本分析 + CSV 导出（参考 Lottle7）。
 
 ## 四、边界与非目标

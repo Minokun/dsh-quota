@@ -44,6 +44,11 @@ const zh = {
 
   'provider.synced': '⇄ 已同步 {ref} · {source}',
   'provider.syncedTitle': '凭证引用 {ref}（{source}）',
+  'probe.run': '测',
+  'probe.title': '测试连接（返回毫秒延迟）',
+  'probe.running': '测活中…',
+  'probe.ok': '✓ {ms}ms',
+  'probe.fail': '✗ {message}',
 
   'toast.loginExpired': '⚠️ {label} 登录已失效',
   'toast.retry': '重试',
@@ -128,6 +133,11 @@ const en: Record<LocaleKey, string> = {
 
   'provider.synced': '⇄ synced {ref} · {source}',
   'provider.syncedTitle': 'credential ref {ref} ({source})',
+  'probe.run': 'Test',
+  'probe.title': 'Test connectivity (reports latency in ms)',
+  'probe.running': 'Testing…',
+  'probe.ok': '✓ {ms}ms',
+  'probe.fail': '✗ {message}',
 
   'toast.loginExpired': '⚠️ {label} login expired',
   'toast.retry': 'Retry',

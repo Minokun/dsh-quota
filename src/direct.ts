@@ -34,13 +34,67 @@ export interface DirectAdapter {
 
 const UA = 'KimiCLI/1.6'
 
-async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal): Promise<unknown> {
-  const resp = await fetch(url, { headers, signal })
+/** Custom-platform responses are capped at this many bytes (SSRF/DoS hygiene). */
+export const CUSTOM_RESPONSE_MAX_BYTES = 256 * 1024
+
+/**
+ * GET + JSON with a response cap. Built-in catalog endpoints keep the
+ * platform default (redirects followed, 1 MiB cap); user-declared custom
+ * platforms pass `strict`, which refuses redirects — a public endpoint that
+ * 302s to an internal address would otherwise defeat the host check — and
+ * applies the tighter 256 KiB cap.
+ */
+async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal, opts: { strict?: boolean } = {}): Promise<unknown> {
+  const maxBytes = opts.strict === true ? CUSTOM_RESPONSE_MAX_BYTES : 1024 * 1024
+  const resp = await fetch(url, { headers, signal, ...(opts.strict === true ? { redirect: 'error' as const } : {}) })
   if (!resp.ok) {
     const body = await resp.text().catch(() => '')
     throw new Error(`HTTP ${resp.status} ${body.slice(0, 200)}`)
   }
-  return resp.json() as Promise<unknown>
+  const text = await resp.text()
+  if (text.length > maxBytes) throw new Error(`响应超过 ${String(Math.round(maxBytes / 1024))} KiB 上限`)
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new Error('响应不是合法 JSON')
+  }
+}
+
+/**
+ * Reject custom-platform endpoints that could be used to probe the local
+ * network: non-HTTPS, embedded credentials, query/fragment components, and
+ * loopback / private / link-local / unique-local hosts (by name or IP
+ * literal). The check runs at configuration time; getJson then refuses
+ * redirects so a public host cannot hop to an internal one at fetch time.
+ * @param raw - the user-supplied endpoint URL.
+ * @returns the normalized URL string.
+ */
+export function assertPublicHttpsUrl(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw.trim())
+  } catch {
+    throw new Error('接口地址不是合法 URL')
+  }
+  if (url.protocol !== 'https:') throw new Error('接口地址必须是 https URL')
+  if (url.username || url.password) throw new Error('接口地址不能内嵌用户名/密码')
+  if (url.search || url.hash) throw new Error('接口地址不能带查询参数或 # 片段')
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const blockedNames = ['localhost', 'metadata.google.internal', 'metadata.goog']
+  if (blockedNames.includes(host) || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error(`接口地址不能指向内网主机（${host}）`)
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const [a = 0, b = 0] = host.split('.').map(Number)
+    const priv = a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224
+    if (priv) throw new Error(`接口地址不能指向内网/保留地址（${host}）`)
+  } else if (host.includes(':')) {
+    const v6 = host
+    if (v6 === '::1' || v6 === '::' || v6.startsWith('fe80:') || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('::ffff:127.')) {
+      throw new Error(`接口地址不能指向内网/保留地址（${host}）`)
+    }
+  }
+  return url.toString()
 }
 
 function num(v: unknown): number | undefined {
@@ -523,8 +577,8 @@ export function customHttpFetch(platform: CustomHttpPlatform): (key: string, sig
     return async (key, signal) => {
       const base = platform.endpoint.replace(/\/+$/, '')
       const headers = { Authorization: `Bearer ${key}` }
-      const sub = await getJson(`${base}/v1/dashboard/billing/subscription`, headers, signal) as Record<string, unknown>
-      const usage = await getJson(`${base}/v1/dashboard/billing/usage`, headers, signal) as Record<string, unknown>
+      const sub = await getJson(`${base}/v1/dashboard/billing/subscription`, headers, signal, { strict: true }) as Record<string, unknown>
+      const usage = await getJson(`${base}/v1/dashboard/billing/usage`, headers, signal, { strict: true }) as Record<string, unknown>
       const limit = num(sub.hard_limit_usd)
       const usedCents = num(usage.total_usage)
       if (limit === undefined || usedCents === undefined) throw new Error('openai-billing: missing hard_limit_usd / total_usage')
@@ -565,7 +619,7 @@ export function customHttpFetch(platform: CustomHttpPlatform): (key: string, sig
       const body = await getJson(`${base}/api/user/self`, {
         Authorization: `Bearer ${key}`,
         'New-Api-User': userId,
-      }, signal) as Record<string, unknown>
+      }, signal, { strict: true }) as Record<string, unknown>
       if (body.success === false) throw new Error(`newapi-account: ${str(body.message) ?? 'request failed'}`)
       const data = (body.data ?? body) as Record<string, unknown>
       const balanceQuota = num(data.quota)
@@ -580,7 +634,7 @@ export function customHttpFetch(platform: CustomHttpPlatform): (key: string, sig
   const parser = FORMATS[platform.format]
   if (!parser) throw new Error(`unknown format ${platform.format}`)
   return async (key, signal) => {
-    const body = await getJson(platform.endpoint, { Authorization: `Bearer ${key}` }, signal)
+    const body = await getJson(platform.endpoint, { Authorization: `Bearer ${key}` }, signal, { strict: true })
     return { id: platform.id, label: platform.label, status: 'ok', via: 'api', items: parser(body) }
   }
 }

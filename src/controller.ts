@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
-import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, customHttpFetch, type DirectAdapter } from './direct.ts'
+import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
@@ -175,6 +175,8 @@ export interface QuotaControllerFace {
   loginStart(platform: string): Promise<void>
   /** User confirms login done: run the flow's afterLogin hook, then refresh. */
   loginDone(platform: string): Promise<Config>
+  /** One-shot connectivity probe for one platform card (latency + error). */
+  probe(platform: string): Promise<{ ok: boolean; ms: number; message?: string }>
 }
 
 export class QuotaController implements QuotaControllerFace {
@@ -446,8 +448,7 @@ export class QuotaController implements QuotaControllerFace {
     if (!/^[a-z0-9-]+$/.test(id)) throw new Error('id 只能含小写字母、数字、连字符')
     const label = (platform.label ?? '').trim()
     if (!label) throw new Error('名称不能为空')
-    const endpoint = (platform.endpoint ?? '').trim()
-    if (!/^https:\/\/.+/.test(endpoint)) throw new Error('接口地址必须是 https URL')
+    const endpoint = assertPublicHttpsUrl(platform.endpoint ?? '')
     const keyRef = (platform.keyRef ?? '').trim()
     if (!/^[A-Z][A-Z0-9_]*$/.test(keyRef)) throw new Error('凭证引用必须是大写下划线命名（如 MY_PLATFORM_API_KEY）')
     const format = (platform.format ?? '').trim()
@@ -510,6 +511,37 @@ export class QuotaController implements QuotaControllerFace {
       }
     }
     return this.refresh()
+  }
+
+  /**
+   * One-shot connectivity probe for one platform card: re-run that card's own
+   * fetch (or MCP tool chain) and report wall-clock latency plus the upstream
+   * error when it fails. Read-only — the snapshot is not modified.
+   */
+  async probe(platform: string): Promise<{ ok: boolean; ms: number; message?: string }> {
+    const started = Date.now()
+    const direct = this.allDirectAdapters().find((a) => a.id === platform)
+    if (direct) {
+      const key = await resolveKey(this.getCredentials(), direct.keyRefs, direct.envKeys)
+      if (!key) return { ok: false, ms: 0, message: '未找到 API key（DSH 凭证与环境变量均无）' }
+      try {
+        await direct.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+        return { ok: true, ms: Date.now() - started }
+      } catch (error) {
+        return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
+    const mcp = this.mcpAdapters().find((a) => a.id === platform)
+    const tools = this.ctx.get('tools')
+    if (mcp && tools) {
+      try {
+        await runMcpAdapter(tools as ToolRuntime, mcp)
+        return { ok: true, ms: Date.now() - started }
+      } catch (error) {
+        return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
+    throw new Error(`未知平台：${platform}`)
   }
 
   /** Describe configured keys (never the values): which ref supplies each platform. */

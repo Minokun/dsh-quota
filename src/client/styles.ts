@@ -113,6 +113,10 @@ export const PANEL_CSS = `
 .dq-badge--missing-mcp { background: rgba(155, 89, 255, 0.14); color: #9b59ff; }
 .dq-badge--api { background: rgba(91, 108, 255, 0.14); color: #5b6cff; }
 .dq-badge--mcp { background: rgba(0, 180, 216, 0.14); color: #00b4d8; }
+.dq-probe { padding: 2px 8px; font-size: 11px; flex: none; }
+.dq-probe-result { font-size: 10px; font-variant-numeric: tabular-nums; word-break: break-all; }
+.dq-probe-result--ok { color: #3ddc84; }
+.dq-probe-result--err { color: #e74c3c; }
 .dq-provider-msg { font-size: 11px; color: var(--dsw-alias-label-secondary, #999); word-break: break-all; }
 .dq-provider-key {
   font-size: 10px; color: var(--dsw-alias-label-tertiary, #777);

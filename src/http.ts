@@ -6,6 +6,7 @@
  * POST /keys/remove       — remove one platform API key
  * POST /platforms         — add one user-declared HTTP platform
  * POST /platforms/remove  — remove one user-declared HTTP platform
+ * POST /probe             — one-shot connectivity probe for one platform card
  * @module dsh-quota/http
  */
 
@@ -51,6 +52,12 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
         const platform = stringField(body, 'platform')
         if (!platform) return send(res, 400, { error: 'platform 必填' })
         return send(res, 200, await quota.loginDone(platform))
+      }
+      if (path === '/probe') {
+        const body = await readJson(req)
+        const platform = stringField(body, 'platform')
+        if (!platform) return send(res, 400, { error: 'platform 必填' })
+        return send(res, 200, await quota.probe(platform))
       }
       if (path === '/keys') {
         const body = await readJson(req)
