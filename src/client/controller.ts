@@ -6,6 +6,7 @@
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { browserLang, translate, type Lang } from './locale.ts'
 
 /** One item row as rendered by the panel. */
 export interface PanelItem {
@@ -95,25 +96,25 @@ export function platformForProvider(provider: string): string {
   return ''
 }
 
-/** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周, "300m 窗口"→300m. */
-function shortTag(label: string): string {
+/** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周/wk, "300m 窗口"→300m. */
+function shortTag(label: string, lang: Lang): string {
   if (/5\s*小时/.test(label)) return '5h'
   const m = label.match(/(\d+)\s*m\b/)
   if (m) return `${m[1]}m`
-  if (/本周|周/.test(label)) return '周'
-  if (/月/.test(label)) return '月'
+  if (/本周|周/.test(label)) return translate(lang, 'tag.weekly')
+  if (/月/.test(label)) return translate(lang, 'tag.monthly')
   return ''
 }
 
 /** One-line quota summary: up to two headline windows joined by " · ". */
-export function summarizeItems(provider: PanelProvider | undefined): string {
+export function summarizeItems(provider: PanelProvider | undefined, lang: Lang = 'zh'): string {
   if (!provider || provider.status !== 'ok') return ''
   const head = (item: PanelItem): string | undefined => {
     const value = item.percent !== undefined
-      ? `剩${Math.max(0, Math.round(100 - item.percent))}%`
-      : item.display ?? (item.remaining !== undefined ? `剩${item.remaining}` : undefined)
+      ? translate(lang, 'summary.remainingPercent', { p: Math.max(0, Math.round(100 - item.percent)) })
+      : item.display ?? (item.remaining !== undefined ? translate(lang, 'summary.remainingCount', { n: item.remaining }) : undefined)
     if (value === undefined) return undefined
-    const tag = shortTag(item.label)
+    const tag = shortTag(item.label, lang)
     return tag ? `${tag} ${value}` : value
   }
   const headlines = provider.items.filter((i) => /窗口|周|余额|额度|金额/.test(i.label))
@@ -169,6 +170,8 @@ export interface QuotaPanelState {
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
+  /** 面板文案语言（跟随 DSH locale 服务，服务缺失时按浏览器语言）。 */
+  lang: Lang
 }
 
 /** The registration-side face the slot entry injects. */
@@ -223,6 +226,7 @@ const INITIAL: QuotaPanelState = {
   providerKeyRefs: {},
   loginAlerts: [],
   alertPercent: 85,
+  lang: browserLang(),
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -240,11 +244,34 @@ export class QuotaPanelController {
   /** 已忽略提醒的平台（恢复后再次失败会重新提醒）。 */
   private readonly dismissedAlerts = new Set<string>()
   private unwatchModel: (() => void) | undefined
+  private unwatchLocale: (() => void) | undefined
   private watchingSession: string | undefined
 
   constructor() {
     this.store = createSnapshotStore<QuotaPanelState>(INITIAL)
     void this.reload()
+  }
+
+  /** Current UI language (for client-generated error copy). */
+  private lang(): Lang {
+    return this.store.getSnapshot().lang
+  }
+
+  /**
+   * Follow the official locale service when it exists: its active locale
+   * drives the panel copy and every switch repaints. Structural face — the
+   * plugin still works (browser-derived language) on builds without it.
+   */
+  bindLocale(service: { getSnapshot(): { active?: string }; subscribe(fn: () => void): () => void } | undefined): void {
+    this.unwatchLocale?.()
+    this.unwatchLocale = undefined
+    if (!service) return
+    const apply = (): void => {
+      const active = service.getSnapshot().active
+      this.patch({ lang: active === 'en' ? 'en' : 'zh' })
+    }
+    apply()
+    this.unwatchLocale = service.subscribe(apply)
   }
 
   /** Bind ctx.modelDirectories so the pill can follow the visible session's model. */
@@ -327,7 +354,7 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number }>('/status', undefined, this.lang())
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -344,7 +371,7 @@ export class QuotaPanelController {
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
     } catch {
-      this.patch({ loaded: true, formError: '无法读取插件状态，请刷新页面' })
+      this.patch({ loaded: true, formError: translate(this.lang(), 'error.readStatus') })
     }
   }
 
@@ -368,7 +395,7 @@ export class QuotaPanelController {
   /** Open the platform's login page; the button then flips to 重试. */
   private async loginStart(platform: string): Promise<void> {
     try {
-      await request('/login', { platform })
+      await request('/login', { platform }, this.lang())
       this.patch({ loginPending: platform, formError: '' })
     } catch (error) {
       this.patch({ formError: error instanceof Error ? error.message : String(error) })
@@ -378,7 +405,7 @@ export class QuotaPanelController {
   /** User confirms login: host runs the flow's afterLogin hook and refreshes. */
   private async loginRetry(platform: string): Promise<void> {
     await this.roundTrip(async () => {
-      await request('/login/done', { platform })
+      await request('/login/done', { platform }, this.lang())
       this.patch({ loginPending: '' })
       await this.reload()
     })
@@ -388,17 +415,17 @@ export class QuotaPanelController {
   private async addCustom(): Promise<void> {
     const draft = this.store.getSnapshot().customDraft
     if (!draft.label.trim() || !draft.endpoint.trim() || !draft.keyRef.trim()) {
-      this.patch({ formError: '名称、接口地址、凭证引用都要填' })
+      this.patch({ formError: translate(this.lang(), 'error.customRequired') })
       return
     }
     const isNewApiAccount = draft.format === 'newapi-account'
     const quotaPerUnit = Number(draft.quotaPerUnit)
     if (isNewApiAccount && !/^[1-9]\d*$/.test(draft.userId.trim())) {
-      this.patch({ formError: 'NewAPI 用户 ID 必须是正整数' })
+      this.patch({ formError: translate(this.lang(), 'error.newapiUserId') })
       return
     }
     if (isNewApiAccount && (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0)) {
-      this.patch({ formError: 'NewAPI 每美元额度点必须是正数' })
+      this.patch({ formError: translate(this.lang(), 'error.newapiQuotaPerUnit') })
       return
     }
     // Derive the id from the label: lowercase slug, dash-separated.
@@ -413,7 +440,7 @@ export class QuotaPanelController {
         keyRef: draft.keyRef.trim(),
         format: draft.format,
         ...(isNewApiAccount ? { userId: draft.userId.trim(), quotaPerUnit } : {}),
-      })
+      }, this.lang())
       this.patch({ customDraft: { label: '', endpoint: '', keyRef: '', format: this.store.getSnapshot().customDraft.format, userId: '', quotaPerUnit: '500000' } })
       await this.reload()
     } catch (error) {
@@ -427,7 +454,7 @@ export class QuotaPanelController {
   private async removeCustom(id: string): Promise<void> {
     this.patch({ savingCustom: true, formError: '' })
     try {
-      await request('/platforms/remove', { id })
+      await request('/platforms/remove', { id }, this.lang())
       await this.reload()
     } catch (error) {
       this.patch({ formError: error instanceof Error ? error.message : String(error) })
@@ -446,7 +473,7 @@ export class QuotaPanelController {
 
   /** Ask the Host to refresh every platform snapshot. */
   private async refresh(): Promise<void> {    await this.roundTrip(async () => {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[] }>('/refresh', {})
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[] }>('/refresh', {}, this.lang())
       this.store.set({
         ...this.store.getSnapshot(),
         refreshedAt: state.refreshedAt,
@@ -459,11 +486,11 @@ export class QuotaPanelController {
   private async saveKey(platform: string): Promise<void> {
     const key = this.store.getSnapshot().drafts[platform] ?? ''
     if (!key.trim()) {
-      this.patch({ formError: 'key 不能为空' })
+      this.patch({ formError: translate(this.lang(), 'error.keyEmpty') })
       return
     }
     await this.keyRoundTrip(platform, async () => {
-      const result = await request<{ keys: PanelKeyState }>('/keys', { platform, key })
+      const result = await request<{ keys: PanelKeyState }>('/keys', { platform, key }, this.lang())
       this.patch({
         keys: result.keys,
         drafts: { ...this.store.getSnapshot().drafts, [platform]: '' },
@@ -475,7 +502,7 @@ export class QuotaPanelController {
   /** Remove one platform key via the host credentials domain. */
   private async removeKey(platform: string): Promise<void> {
     await this.keyRoundTrip(platform, async () => {
-      const result = await request<{ keys: PanelKeyState }>('/keys/remove', { platform })
+      const result = await request<{ keys: PanelKeyState }>('/keys/remove', { platform }, this.lang())
       this.patch({ keys: result.keys })
       await this.refresh()
     })
@@ -512,7 +539,7 @@ export class QuotaPanelController {
 }
 
 /** Same-origin JSON call against the plugin API; POSTs carry the CSRF header. */
-async function request<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+async function request<T>(path: string, body: Record<string, unknown> | undefined, lang: Lang): Promise<T> {
   const response = await fetch(`${API_PREFIX}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     ...body !== undefined
@@ -522,7 +549,7 @@ async function request<T>(path: string, body?: Record<string, unknown>): Promise
       }
       : {},
   })
-  if (!response.ok) throw new Error(`插件请求失败（HTTP ${String(response.status)}）`)
+  if (!response.ok) throw new Error(translate(lang, 'error.requestFailed', { status: response.status }))
   const data = await response.json() as T & { statusMessage?: string }
   if (body !== undefined && (data as { statusMessage?: string }).statusMessage) {
     throw new Error((data as { statusMessage: string }).statusMessage)

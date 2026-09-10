@@ -8,6 +8,8 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: the `modelDirectories` service declaration on Context.
+import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { QuotaPanel } from './QuotaPanel.tsx'
 import { QuotaPanelController, type ModelDirectoriesLike } from './controller.ts'
 import { PANEL_CSS, STYLE_TAG_ID } from './styles.ts'
@@ -31,6 +33,16 @@ export function apply(ctx: ClientContext): void {
   // ctx.inject activates this branch once the service registers.
   ctx.inject(['modelDirectories'], (scope) => {
     controller.bindModelDirectories(scope.modelDirectories as ModelDirectoriesLike)
+  })
+
+  // Follow the official locale plugin when the build ships it: its active
+  // locale drives the panel copy and switches repaint. Structural face only —
+  // without the service the panel falls back to the browser language.
+  ctx.inject(['locale'], (scope) => {
+    const locale = (scope as unknown as {
+      locale?: { getSnapshot(): { active?: string }; subscribe(fn: () => void): () => void }
+    }).locale
+    controller.bindLocale(locale)
   })
 
   // The host refreshes quotas on its own cadence (default 5min); the client

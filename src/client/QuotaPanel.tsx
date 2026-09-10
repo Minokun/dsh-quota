@@ -13,6 +13,7 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
+import { translate, type LocaleKey, type TFn } from './locale.ts'
 
 /** Props the renderer binds for the quota panel. */
 export type QuotaPanelProps = PropsRuntime<'shell.overlay'> & InjectFace<QuotaPanelFace>
@@ -73,20 +74,13 @@ function badgeClass(status: string): string {
   }
 }
 
-const STATUS_TEXT: Record<string, string> = {
-  ok: '正常',
-  error: '失败',
-  'missing-key': '未配 Key',
-  'missing-mcp': '无 MCP',
-}
-
 /** Human label for a credential source layer. */
-function sourceText(source?: string): string {
+function sourceText(source: string | undefined, t: TFn): string {
   switch (source) {
-    case 'env': return '环境变量'
-    case 'project-env': return '项目 .env'
-    case 'user-env': return '用户环境'
-    default: return 'DSH 凭证'
+    case 'env': return t('source.env')
+    case 'project-env': return t('source.project-env')
+    case 'user-env': return t('source.user-env')
+    default: return t('source.dsh')
   }
 }
 
@@ -97,23 +91,25 @@ function fillClass(percent: number): string {
   return 'dq-item-fill--ok'
 }
 
-/** Compact reset label, e.g. "8/21 08:23 重置". */
-function resetText(iso?: string): string {
+/** Compact reset label, e.g. "8/21 08:23 重置" / "resets 8/21 08:23". */
+function resetText(iso: string | undefined, t: TFn): string {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   const sameDay = d.toDateString() === new Date().toDateString()
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
-  const day = sameDay ? '今天' : `${d.getMonth() + 1}/${d.getDate()}`
-  return `${day} ${hh}:${mm} 重置`
+  const time = `${hh}:${mm}`
+  return sameDay
+    ? t('reset.today', { time })
+    : t('reset.day', { date: `${d.getMonth() + 1}/${d.getDate()}`, time })
 }
 
-/** Compact ETA label, e.g. "约 45 分钟后耗尽" / "约 2.3 天后耗尽". */
-function etaText(minutes: number): string {
-  if (minutes < 60) return `约 ${String(minutes)} 分钟后耗尽`
-  if (minutes < 60 * 24) return `约 ${(minutes / 60).toFixed(1)} 小时后耗尽`
-  return `约 ${(minutes / 1440).toFixed(1)} 天后耗尽`
+/** Compact ETA label, e.g. "约 45 分钟后耗尽" / "depletes in ~2.3 h". */
+function etaText(minutes: number, t: TFn): string {
+  if (minutes < 60) return t('eta.minutes', { n: minutes })
+  if (minutes < 60 * 24) return t('eta.hours', { n: (minutes / 60).toFixed(1) })
+  return t('eta.days', { n: (minutes / 1440).toFixed(1) })
 }
 
 /** 红点告警数量：查询失败的平台 + 用量越阈值的条目 + 登录失效提醒。 */
@@ -150,6 +146,7 @@ const RING_CAROUSEL_MS = 4000
 /** The pill + panel entry. */
 export function QuotaPanel(props: QuotaPanelProps) {
   const state = props.useQuotaPanel((snapshot) => snapshot)
+  const t: TFn = (key, params) => translate(state.lang, key, params)
   const busy = state.busy
   const okCount = state.providers.filter((p) => p.status === 'ok').length
   const totalCount = state.providers.length
@@ -162,18 +159,19 @@ export function QuotaPanel(props: QuotaPanelProps) {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
   // 先按 apiKeyEnv 精确对应（同平台多号也准），再退回名称模糊匹配。
-  const sessionSummary = (() => {
-    if (!state.sessionModel) return ''
-    const ref = state.providerKeyRefs[state.sessionModel.provider]
-    const platformId = platformForProvider(state.sessionModel.provider)
-    const row = (ref ? state.providers.find((p) => p.keyRef === ref) : undefined)
+  const rowFor = (provider: string): PanelProvider | undefined => {
+    const ref = state.providerKeyRefs[provider]
+    const platformId = platformForProvider(provider)
+    return (ref ? state.providers.find((p) => p.keyRef === ref) : undefined)
       ?? state.providers.find((p) => p.id === platformId || p.id.startsWith(`${platformId}#`))
-    return summarizeItems(row)
-  })()
-  const summary = sessionSummary || state.currentModel.summary
+  }
+  const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider), state.lang) : ''
+  // 默认模型的摘要同样在本地按当前语言拼（host 下发的 summary 文案固定中文）。
+  const defaultSummary = summarizeItems(rowFor(state.currentModel.provider), state.lang)
+  const summary = sessionSummary || defaultSummary || state.currentModel.summary
   const modelFrom = state.sessionModel
-    ? `会话模型 ${state.sessionModel.provider}/${state.sessionModel.model}`
-    : `默认模型 ${state.currentModel.provider}/${state.currentModel.model}`
+    ? `${t('model.from.session')} ${state.sessionModel.provider}/${state.sessionModel.model}`
+    : `${t('model.from.default')} ${state.currentModel.provider}/${state.currentModel.model}`
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
@@ -313,12 +311,10 @@ export function QuotaPanel(props: QuotaPanelProps) {
       // pointer capture 丢失。
       style={flip ? { order: -1 } : undefined}
       {...dragHandlers}
-      title={`${summary
-        ? `${modelFrom}：${summary}`
-        : '查看各平台会员额度'}（可拖拽移动）`}
+      title={summary ? t('pill.title.summary', { from: modelFrom, summary }) : t('pill.title.default')}
     >
       <span className={`dq-dot ${dotClass(state)}`} />
-      <span className="dq-pill-name">{modelName || '会员额度'}</span>
+      <span className="dq-pill-name">{modelName || t('pill.defaultName')}</span>
       {summary && <span className="dq-pill-model">{summary}</span>}
       {badge}
     </button>
@@ -334,8 +330,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
       onPointerEnter={() => { setRingHover(true) }}
       onPointerLeave={() => { setRingHover(false) }}
       title={ringFocus && ringItem
-        ? `${ringFocus.label} · ${ringItem.label}：剩 ${String(Math.round(ringRemaining ?? 0))}%（悬停暂停轮播，可拖拽移动）`
-        : '查看各平台会员额度（可拖拽移动）'}
+        ? t('ring.title.focus', { label: ringFocus.label, item: ringItem.label, percent: Math.round(ringRemaining ?? 0) })
+        : t('pill.title.default')}
     >
       <svg viewBox="0 0 46 46" className="dq-ring-svg" aria-hidden="true">
         <circle className="dq-ring-track" cx="23" cy="23" r={RING_R} />
@@ -360,42 +356,40 @@ export function QuotaPanel(props: QuotaPanelProps) {
     <div className="dq-root" style={rootStyle}>
       {state.loginAlerts.map((a) => (
         <div key={a.id} className="dq-toast" role="alert">
-          <span className="dq-toast-text">⚠️ {a.label} 登录已失效</span>
+          <span className="dq-toast-text">{t('toast.loginExpired', { label: a.label })}</span>
           {state.loginPending === a.id
-            ? <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.loginRetry(a.id) }}>重试</button>
-            : <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.loginStart(a.id) }}>去登录</button>}
-          <button type="button" className="dq-btn dq-btn--ghost" title="忽略本次提醒" onClick={() => { props.dismissLogin(a.id) }}>✕</button>
+            ? <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.loginRetry(a.id) }}>{t('toast.retry')}</button>
+            : <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.loginStart(a.id) }}>{t('toast.login')}</button>}
+          <button type="button" className="dq-btn dq-btn--ghost" title={t('toast.dismiss')} onClick={() => { props.dismissLogin(a.id) }}>✕</button>
         </div>
       ))}
       {state.open && (
         <div className="dq-panel">
           <div className="dq-panel-head">
-            <span className="dq-panel-title">会员额度</span>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>{totalCount > 0 ? `${okCount}/${totalCount} 正常` : ''}</span>
-            <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? '切换为悬浮环' : '切换为药丸'} onClick={toggleMode}>
+            <span className="dq-panel-title">{t('panel.title')}</span>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>{totalCount > 0 ? t('panel.normalCount', { ok: okCount, total: totalCount }) : ''}</span>
+            <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
               {mode === 'pill' ? '◯' : '▬'}
             </button>
             <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
-              {busy ? '刷新中…' : '刷新'}
+              {busy ? t('panel.refreshing') : t('panel.refresh')}
             </button>
             <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.close() }}>✕</button>
           </div>
           <div className="dq-panel-body">
             {state.loaded && state.providers.length === 0 && (
-              <div className="dq-empty">
-                还没有可显示的平台——只有能解析到 key 的平台才会出现。在下方「API Key 管理」填入平台 key，或在 DSH 模型设置里配置供应商（key 自动同步）。
-              </div>
+              <div className="dq-empty">{t('panel.empty')}</div>
             )}
             {state.providers.map((p) => (
               <div key={p.id} className="dq-provider">
                 <div className="dq-provider-head">
                   <span className="dq-provider-name">{p.label}</span>
                   {p.via && <span className={`dq-badge ${p.via === 'api' ? 'dq-badge--api' : 'dq-badge--mcp'}`}>{p.via === 'api' ? 'API' : 'MCP'}</span>}
-                  <span className={`dq-badge ${badgeClass(p.status)}`}>{STATUS_TEXT[p.status] ?? p.status}</span>
+                  <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
                 </div>
                 {p.via === 'api' && p.keyRef && (
-                  <span className="dq-provider-key" title={`凭证引用 ${p.keyRef}（${sourceText(p.keySource)}）`}>
-                    ⇄ 已同步 {p.keyRef} · {sourceText(p.keySource)}
+                  <span className="dq-provider-key" title={t('provider.syncedTitle', { ref: p.keyRef, source: sourceText(p.keySource, t) })}>
+                    {t('provider.synced', { ref: p.keyRef, source: sourceText(p.keySource, t) })}
                   </span>
                 )}
                 {p.message && <span className="dq-provider-msg">{p.message}</span>}
@@ -403,8 +397,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   const loginish = p.status === 'error' && Boolean(p.message) && /未登录|未授权|未认证|401|登录|login|unauthorized/i.test(p.message ?? '')
                   if (!loginish || !state.loginFlows[p.id]) return null
                   return state.loginPending === p.id
-                    ? <button type="button" className="dq-btn dq-btn--primary dq-login-btn" disabled={busy} onClick={() => { props.loginRetry(p.id) }}>我已完成登录，重试</button>
-                    : <button type="button" className="dq-btn dq-login-btn" onClick={() => { props.loginStart(p.id) }}>去登录 ↗</button>
+                    ? <button type="button" className="dq-btn dq-btn--primary dq-login-btn" disabled={busy} onClick={() => { props.loginRetry(p.id) }}>{t('login.done')}</button>
+                    : <button type="button" className="dq-btn dq-login-btn" onClick={() => { props.loginStart(p.id) }}>{t('login.go')}</button>
                 })()}
                 {p.items.length > 0 && (
                   <div className="dq-items">
@@ -415,7 +409,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
                           ? `${item.used ?? '?'} / ${item.limit ?? '?'}`
                           : ''
                       )
-                      const reset = resetText(item.resetAt)
+                      const reset = resetText(item.resetAt, t)
                       return (
                         <div key={`${item.label}-${i}`} className="dq-item">
                           <span className="dq-item-label" title={item.label}>{item.label}</span>
@@ -424,12 +418,12 @@ export function QuotaPanel(props: QuotaPanelProps) {
                             : <span className="dq-item-bar" style={{ background: 'transparent' }} />}
                           <span className="dq-item-value">
                             {value}
-                            {percent !== undefined && item.remaining !== undefined ? ` 剩${item.remaining}` : ''}
+                            {percent !== undefined && item.remaining !== undefined ? ` ${t('item.remaining', { n: item.remaining })}` : ''}
                           </span>
                           {reset && <span className="dq-item-reset">{reset}</span>}
                           {item.etaMinutes !== undefined && (
-                            <span className="dq-item-eta" title="按当前窗口段的平均消耗速率预估">
-                              {item.burnRatePerHour !== undefined ? `≈${item.burnRatePerHour}/h · ` : ''}{etaText(item.etaMinutes)}
+                            <span className="dq-item-eta" title={t('eta.title')}>
+                              {item.burnRatePerHour !== undefined ? `≈${item.burnRatePerHour}/h · ` : ''}{etaText(item.etaMinutes, t)}
                             </span>
                           )}
                         </div>
@@ -443,8 +437,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
             <div className="dq-keys">
               <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleKeys() }}>
                 <span className="dq-keys-caret">{state.showKeys ? '▾' : '▸'}</span>
-                API Key 管理
-                <span className="dq-keys-hint">DSH 已添加的 key 会自动同步，一般无需手动填写</span>
+                {t('keys.title')}
+                <span className="dq-keys-hint">{t('keys.hint')}</span>
               </button>
               {state.showKeys && (state.keyPlatforms.length > 0 ? state.keyPlatforms : [{ id: 'kimi', label: 'Kimi Code' }, { id: 'deepseek', label: 'DeepSeek' }, { id: 'zhipu', label: '智谱' }]).map((kp) => {
                 const keyInfo = state.keys[kp.id]
@@ -452,18 +446,18 @@ export function QuotaPanel(props: QuotaPanelProps) {
                 const saving = state.savingKey === kp.id
                 return (
                   <div key={kp.id} className="dq-key-row">
-                    <label title={configured && keyInfo?.ref ? `当前：${keyInfo.ref}（${sourceText(keyInfo.source)}）` : '未配置'}>
+                    <label title={configured && keyInfo?.ref ? t('keys.configuredTitle', { ref: keyInfo.ref, source: sourceText(keyInfo.source, t) }) : t('keys.unconfiguredTitle')}>
                       {kp.label}
                     </label>
                     <input
                       className="dq-input"
                       type="password"
-                      placeholder={configured ? `${keyInfo?.ref ?? '已配置'}，输入可覆盖` : 'sk-...'}
+                      placeholder={configured ? t('keys.overridePlaceholder', { ref: keyInfo?.ref ?? '' }) : 'sk-...'}
                       value={state.drafts[kp.id] ?? ''}
                       onChange={(e) => { props.editKey(kp.id, e.currentTarget.value) }}
                     />
                     {keyInfo?.manual && (
-                      <button type="button" className="dq-btn dq-btn--ghost" disabled={saving} title="删除面板手动保存的 key" onClick={() => { props.removeKey(kp.id) }}>删</button>
+                      <button type="button" className="dq-btn dq-btn--ghost" disabled={saving} title={t('keys.deleteTitle')} onClick={() => { props.removeKey(kp.id) }}>{t('keys.delete')}</button>
                     )}
                     <button
                       type="button"
@@ -471,21 +465,21 @@ export function QuotaPanel(props: QuotaPanelProps) {
                       disabled={saving || !(state.drafts[kp.id] ?? '').trim()}
                       onClick={() => { props.saveKey(kp.id) }}
                     >
-                      {saving ? '…' : '存'}
+                      {saving ? '…' : t('keys.save')}
                     </button>
                   </div>
                 )
               })}
                {state.showKeys && (
-                 <span className="dq-keys-note">手动保存的 key 存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置。</span>
+                 <span className="dq-keys-note">{t('keys.note')}</span>
                )}
              </div>
 
              <div className="dq-keys">
                <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleCustom() }}>
                  <span className="dq-keys-caret">{state.showCustom ? '▾' : '▸'}</span>
-                 自定义平台
-                 <span className="dq-keys-hint">聚合站 / one-api / new-api，接口匹配内置格式即可</span>
+                 {t('custom.title')}
+                 <span className="dq-keys-hint">{t('custom.hint')}</span>
                </button>
                {state.showCustom && (
                  <>
@@ -493,16 +487,16 @@ export function QuotaPanel(props: QuotaPanelProps) {
                      <div key={cp.id} className="dq-key-row">
                        <label title={`${cp.endpoint} · ${cp.format}`}>{cp.label}</label>
                        <span className="dq-custom-ref">{cp.keyRef}</span>
-                       <button type="button" className="dq-btn dq-btn--ghost" disabled={state.savingCustom} onClick={() => { props.removeCustom(cp.id) }}>删</button>
+                       <button type="button" className="dq-btn dq-btn--ghost" disabled={state.savingCustom} onClick={() => { props.removeCustom(cp.id) }}>{t('custom.remove')}</button>
                      </div>
                    ))}
-                   <input className="dq-input" placeholder="名称（如 我的聚合站）" value={state.customDraft.label} onChange={(e) => { props.editCustom('label', e.currentTarget.value) }} />
-                   <input className="dq-input" placeholder="接口地址（https://…，openai-billing 填站点根地址）" value={state.customDraft.endpoint} onChange={(e) => { props.editCustom('endpoint', e.currentTarget.value) }} />
-                   <input className="dq-input" placeholder="凭证引用（如 MY_SITE_API_KEY，先存入 DSH 凭证）" value={state.customDraft.keyRef} onChange={(e) => { props.editCustom('keyRef', e.currentTarget.value) }} />
+                   <input className="dq-input" placeholder={t('custom.namePlaceholder')} value={state.customDraft.label} onChange={(e) => { props.editCustom('label', e.currentTarget.value) }} />
+                   <input className="dq-input" placeholder={t('custom.endpointPlaceholder')} value={state.customDraft.endpoint} onChange={(e) => { props.editCustom('endpoint', e.currentTarget.value) }} />
+                   <input className="dq-input" placeholder={t('custom.keyRefPlaceholder')} value={state.customDraft.keyRef} onChange={(e) => { props.editCustom('keyRef', e.currentTarget.value) }} />
                    {state.customDraft.format === 'newapi-account' && (
                      <>
-                       <input className="dq-input" inputMode="numeric" placeholder="NewAPI 用户 ID（如 123）" value={state.customDraft.userId} onChange={(e) => { props.editCustom('userId', e.currentTarget.value) }} />
-                       <input className="dq-input" inputMode="numeric" placeholder="每美元额度点（默认 500000）" value={state.customDraft.quotaPerUnit} onChange={(e) => { props.editCustom('quotaPerUnit', e.currentTarget.value) }} />
+                       <input className="dq-input" inputMode="numeric" placeholder={t('custom.userIdPlaceholder')} value={state.customDraft.userId} onChange={(e) => { props.editCustom('userId', e.currentTarget.value) }} />
+                       <input className="dq-input" inputMode="numeric" placeholder={t('custom.quotaPerUnitPlaceholder')} value={state.customDraft.quotaPerUnit} onChange={(e) => { props.editCustom('quotaPerUnit', e.currentTarget.value) }} />
                      </>
                    )}
                    <div className="dq-key-row">
@@ -515,17 +509,19 @@ export function QuotaPanel(props: QuotaPanelProps) {
                        disabled={state.savingCustom || !state.customDraft.label.trim() || !state.customDraft.endpoint.trim() || !state.customDraft.keyRef.trim() || (state.customDraft.format === 'newapi-account' && (!/^[1-9]\d*$/.test(state.customDraft.userId.trim()) || !(Number(state.customDraft.quotaPerUnit) > 0)))}
                        onClick={() => { props.addCustom() }}
                      >
-                       {state.savingCustom ? '…' : '添加'}
+                       {state.savingCustom ? '…' : t('custom.add')}
                      </button>
                    </div>
-                   <span className="dq-keys-note">key 先写进 DSH 凭证域（如 MY_SITE_API_KEY），这里只填引用名；newapi-account 应保存系统访问令牌，而不是模型调用的 sk-* key。</span>
+                   <span className="dq-keys-note">{t('custom.note')}</span>
                  </>
                )}
              </div>
             {state.formError && <div className="dq-provider-msg" style={{ color: '#e74c3c' }}>{state.formError}</div>}
           </div>
           <div className="dq-foot">
-            {state.refreshedAt ? `刷新于 ${new Date(state.refreshedAt).toLocaleString('zh-CN')}` : '尚未刷新'}
+            {state.refreshedAt
+              ? t('panel.footer.refreshedAt', { time: new Date(state.refreshedAt).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US') })
+              : t('panel.footer.never')}
           </div>
         </div>
       )}

@@ -54,8 +54,11 @@
 
 ## 三、后续阶段
 
-- **阶段 2 · i18n**：文案抽 locale 表（zh-CN/en），跟随 DSH 界面语言 + 面板手动覆盖；
-  `tools.ts` 的工具 description 同步双语化。
+- **阶段 2 · i18n ✅ 已完成（0.11.0）**：`src/client/locale.ts` 双语文案表（zh/en，70+ 键），
+  跟随官方 `ctx.locale` 服务实时切换、无该服务时按浏览器语言兜底；面板/悬浮球/悬浮环/错误提示/
+  时间与 ETA 格式全部本地化，`tests/locale.test.ts` 校验两语言键集一致且 en 文案无中文残留。
+  已知边界：host 下发的平台条目名（如「周额度」）与上游报错原文仍为中文（数据面，后续可用结构化
+  tag 字段彻底解决）；`tools.ts` 的工具 description 暂保持中文+英文混排。
 - **阶段 3 · OpenAI/Claude 适配器**：OpenAI `/v1/organization/costs`（admin key）、
   Anthropic Admin `cost_report`（无余额 API，只展示用量/成本）、可选 Codex(Wham) 订阅额度。
 - **阶段 4 · 体验补强**：一键测试连接 + 毫秒延迟；自定义端点安全加固（DNS/TLS/大小上限）。
