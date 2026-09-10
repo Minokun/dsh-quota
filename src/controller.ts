@@ -17,6 +17,7 @@ import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, customHttpFetch, type DirectAdapter } from './direct.ts'
+import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
@@ -202,7 +203,7 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Current panel state (composition defaults before first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], providerKeyRefs: {}, currentModel: EMPTY_CURRENT_MODEL, providers: [] }
+    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], providerKeyRefs: {}, history: {}, alertPercent: 85, currentModel: EMPTY_CURRENT_MODEL, providers: [] }
   }
 
   /** Patch the settings namespace (no-op without a settings service). */
@@ -378,8 +379,24 @@ export class QuotaController implements QuotaControllerFace {
         }
       }
 
-      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs }
-      await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs })
+      // 时序采样 → 消耗速率 + 预估剩余时长：先把本轮数值并入历史（采样
+      // 间隔 ≥10 分钟），再在当前单调段上算速率，窗口重置（数值骤降）会
+      // 自动截断历史段，避免跨重置算出负速率。
+      const now = Date.now()
+      const history = recordSamples((this.state().history ?? {}) as HistoryMap, providers, now)
+      for (const p of providers) {
+        if (p.status !== 'ok') continue
+        for (const item of p.items) {
+          const insight = burnInsight(history[itemKey(p.id, item.label)] ?? [], item, now)
+          if (insight) {
+            item.burnRatePerHour = insight.ratePerHour
+            item.etaMinutes = insight.etaMinutes
+          }
+        }
+      }
+
+      const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history }
+      await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history })
       return state
     } catch (error) {
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false }

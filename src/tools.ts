@@ -39,6 +39,8 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
                       percent: { type: 'number' },
                       resetAt: { type: 'string' },
                       display: { type: 'string' },
+                      burnRatePerHour: { type: 'number' },
+                      etaMinutes: { type: 'number' },
                     },
                     additionalProperties: false,
                   },
@@ -51,7 +53,12 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
         additionalProperties: false,
       },
       render: (_args, value) => {
-        const v = value as { refreshedAt: string; providers: Array<{ label: string; status: string; message?: string; items: Array<{ label: string; percent?: number; remaining?: number; display?: string }> }> }
+        const v = value as { refreshedAt: string; providers: Array<{ label: string; status: string; message?: string; items: Array<{ label: string; percent?: number; remaining?: number; display?: string; burnRatePerHour?: number; etaMinutes?: number }> }> }
+        const etaText = (minutes: number): string => {
+          if (minutes < 60) return `约 ${String(minutes)} 分钟后耗尽`
+          if (minutes < 60 * 24) return `约 ${(minutes / 60).toFixed(1)} 小时后耗尽`
+          return `约 ${(minutes / 1440).toFixed(1)} 天后耗尽`
+        }
         const lines = v.providers.map((p) => {
           const head = `${p.label}: ${p.status}${p.message ? `（${p.message}）` : ''}`
           const rows = p.items.map((i) => {
@@ -59,6 +66,8 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
             if (i.percent !== undefined) parts.push(`${i.percent}%`)
             if (i.remaining !== undefined) parts.push(`剩 ${i.remaining}`)
             if (i.display !== undefined) parts.push(i.display)
+            if (i.burnRatePerHour !== undefined) parts.push(`消耗 ${i.burnRatePerHour}/h`)
+            if (i.etaMinutes !== undefined) parts.push(etaText(i.etaMinutes))
             return `  - ${parts.join(' | ')}`
           })
           return [head, ...rows].join('\n')

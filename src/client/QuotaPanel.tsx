@@ -12,7 +12,7 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { platformForProvider, summarizeItems, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
+import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 
 /** Props the renderer binds for the quota panel. */
 export type QuotaPanelProps = PropsRuntime<'shell.overlay'> & InjectFace<QuotaPanelFace>
@@ -109,6 +109,44 @@ function resetText(iso?: string): string {
   return `${day} ${hh}:${mm} 重置`
 }
 
+/** Compact ETA label, e.g. "约 45 分钟后耗尽" / "约 2.3 天后耗尽". */
+function etaText(minutes: number): string {
+  if (minutes < 60) return `约 ${String(minutes)} 分钟后耗尽`
+  if (minutes < 60 * 24) return `约 ${(minutes / 60).toFixed(1)} 小时后耗尽`
+  return `约 ${(minutes / 1440).toFixed(1)} 天后耗尽`
+}
+
+/** 红点告警数量：查询失败的平台 + 用量越阈值的条目 + 登录失效提醒。 */
+function alertCount(state: QuotaPanelState): number {
+  const over = state.providers
+    .filter((p) => p.status === 'ok')
+    .reduce((n, p) => n + p.items.filter((i) => i.percent !== undefined && i.percent >= state.alertPercent).length, 0)
+  const failed = state.providers.filter((p) => p.status === 'error').length
+  return over + failed + state.loginAlerts.length
+}
+
+/** localStorage key for the floater shape: 药丸 pill / 悬浮环 ring. */
+const MODE_KEY = 'dsh-quota:pill-mode'
+type FloaterMode = 'pill' | 'ring'
+
+function loadMode(): FloaterMode {
+  try {
+    return window.localStorage.getItem(MODE_KEY) === 'ring' ? 'ring' : 'pill'
+  } catch { return 'pill' }
+}
+
+/** The headline percent item of a provider card (5h/周 window preferred). */
+function headlineItem(p: PanelProvider): PanelItem | undefined {
+  const withPct = p.items.filter((i) => i.percent !== undefined)
+  return withPct.find((i) => /窗口|周/.test(i.label)) ?? withPct[0]
+}
+
+/** Ring geometry (SVG viewBox 46×46). */
+const RING_R = 19.5
+const RING_C = 2 * Math.PI * RING_R
+/** Carousel dwell per provider while the ring cycles. */
+const RING_CAROUSEL_MS = 4000
+
 /** The pill + panel entry. */
 export function QuotaPanel(props: QuotaPanelProps) {
   const state = props.useQuotaPanel((snapshot) => snapshot)
@@ -138,6 +176,35 @@ export function QuotaPanel(props: QuotaPanelProps) {
     : `默认模型 ${state.currentModel.provider}/${state.currentModel.model}`
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
+
+  // ── 悬浮球形态（药丸/悬浮环）+ 红点告警 ─────────────────────────
+  const [mode, setMode] = useState<FloaterMode>(() => (typeof window === 'undefined' ? 'pill' : loadMode()))
+  const alerts = alertCount(state)
+  const toggleMode = (): void => {
+    const next: FloaterMode = mode === 'pill' ? 'ring' : 'pill'
+    setMode(next)
+    try { window.localStorage.setItem(MODE_KEY, next) } catch { /* private mode */ }
+  }
+
+  // 悬浮环焦点平台：优先跟随当前会话模型对应的卡片；无对应时在 ok 且
+  // 有百分比条目的平台间轮播（悬停暂停）。
+  const ringCandidates = state.providers.filter((p) => p.status === 'ok' && headlineItem(p) !== undefined)
+  const sessionPlatformId = state.sessionModel
+    ? (state.providers.find((p) => p.keyRef === state.providerKeyRefs[state.sessionModel!.provider])?.id
+      ?? platformForProvider(state.sessionModel.provider))
+    : ''
+  const sessionIdx = ringCandidates.findIndex((p) => p.id === sessionPlatformId || p.id.startsWith(`${sessionPlatformId}#`))
+  const [carouselIdx, setCarouselIdx] = useState(0)
+  const [ringHover, setRingHover] = useState(false)
+  useEffect(() => {
+    if (mode !== 'ring' || ringHover || ringCandidates.length < 2) return
+    const t = setInterval(() => { setCarouselIdx((i) => i + 1) }, RING_CAROUSEL_MS)
+    return () => clearInterval(t)
+  }, [mode, ringHover, ringCandidates.length])
+  const ringFocus = ringCandidates[sessionIdx >= 0 ? sessionIdx : carouselIdx % Math.max(1, ringCandidates.length)]
+  const ringItem = ringFocus ? headlineItem(ringFocus) : undefined
+  const ringPercent = ringItem?.percent // 已用占比
+  const ringRemaining = ringPercent !== undefined ? Math.max(0, Math.min(100, 100 - ringPercent)) : undefined
 
   // ── 可拖拽悬浮球 ────────────────────────────────────────────────
   // pos 为 null 时走 CSS 默认右下角；一旦拖动过就记录小球左上角坐标
@@ -214,26 +281,38 @@ export function QuotaPanel(props: QuotaPanelProps) {
       ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto', alignItems: 'flex-start' }
       : { right: window.innerWidth - pos.x - pos.w, bottom: window.innerHeight - pos.y - pos.h }
 
+  // 贴边微缩：拖到屏幕左右边缘时收成半隐小条（面板展开时不缩）。
+  const edge = pos !== null && !state.open
+    ? pos.x <= 12 ? 'l' : pos.x + pos.w >= window.innerWidth - 12 ? 'r' : ''
+    : ''
+
+  // 红点告警 Badge（两种形态共用）。
+  const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
+
+  const dragHandlers = {
+    onPointerDown: onPillPointerDown,
+    onPointerMove: onPillPointerMove,
+    onPointerUp: onPillPointerUp,
+    onPointerCancel: onPillPointerUp,
+    onClick: () => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false
+        return
+      }
+      props.toggle()
+    },
+  }
+
   const pill = (
     <button
       ref={pillRef}
       type="button"
-      className={`dq-pill${dragging ? ' dq-pill--dragging' : ''}`}
+      className={`dq-pill${dragging ? ' dq-pill--dragging' : ''}${edge ? ` dq-floater--edge-${edge}` : ''}`}
       // DOM 顺序固定为最后（面板向上展开）；flip 时用 flex order 把小球
       // 视觉移到最前（面板向下展开），避免跨中线拖拽时 DOM 重挂导致
       // pointer capture 丢失。
       style={flip ? { order: -1 } : undefined}
-      onPointerDown={onPillPointerDown}
-      onPointerMove={onPillPointerMove}
-      onPointerUp={onPillPointerUp}
-      onPointerCancel={onPillPointerUp}
-      onClick={() => {
-        if (suppressClickRef.current) {
-          suppressClickRef.current = false
-          return
-        }
-        props.toggle()
-      }}
+      {...dragHandlers}
       title={`${summary
         ? `${modelFrom}：${summary}`
         : '查看各平台会员额度'}（可拖拽移动）`}
@@ -241,8 +320,41 @@ export function QuotaPanel(props: QuotaPanelProps) {
       <span className={`dq-dot ${dotClass(state)}`} />
       <span className="dq-pill-name">{modelName || '会员额度'}</span>
       {summary && <span className="dq-pill-model">{summary}</span>}
+      {badge}
     </button>
   )
+
+  const ring = (
+    <button
+      ref={pillRef}
+      type="button"
+      className={`dq-ring${dragging ? ' dq-pill--dragging' : ''}${edge ? ` dq-floater--edge-${edge}` : ''}`}
+      style={flip ? { order: -1 } : undefined}
+      {...dragHandlers}
+      onPointerEnter={() => { setRingHover(true) }}
+      onPointerLeave={() => { setRingHover(false) }}
+      title={ringFocus && ringItem
+        ? `${ringFocus.label} · ${ringItem.label}：剩 ${String(Math.round(ringRemaining ?? 0))}%（悬停暂停轮播，可拖拽移动）`
+        : '查看各平台会员额度（可拖拽移动）'}
+    >
+      <svg viewBox="0 0 46 46" className="dq-ring-svg" aria-hidden="true">
+        <circle className="dq-ring-track" cx="23" cy="23" r={RING_R} />
+        {ringRemaining !== undefined && (
+          <circle
+            className={`dq-ring-arc ${ringPercent !== undefined && ringPercent >= 85 ? 'dq-ring-arc--danger' : ringPercent !== undefined && ringPercent >= 60 ? 'dq-ring-arc--warn' : 'dq-ring-arc--ok'}`}
+            cx="23" cy="23" r={RING_R}
+            transform="rotate(-90 23 23)"
+            strokeDasharray={RING_C}
+            strokeDashoffset={RING_C * (1 - ringRemaining / 100)}
+          />
+        )}
+      </svg>
+      <span className="dq-ring-text">{ringRemaining !== undefined ? `${String(Math.round(ringRemaining))}%` : '—'}</span>
+      {badge}
+    </button>
+  )
+
+  const floater = mode === 'ring' ? ring : pill
 
   return (
     <div className="dq-root" style={rootStyle}>
@@ -260,6 +372,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
           <div className="dq-panel-head">
             <span className="dq-panel-title">会员额度</span>
             <span style={{ fontSize: 11, opacity: 0.6 }}>{totalCount > 0 ? `${okCount}/${totalCount} 正常` : ''}</span>
+            <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? '切换为悬浮环' : '切换为药丸'} onClick={toggleMode}>
+              {mode === 'pill' ? '◯' : '▬'}
+            </button>
             <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
               {busy ? '刷新中…' : '刷新'}
             </button>
@@ -312,6 +427,11 @@ export function QuotaPanel(props: QuotaPanelProps) {
                             {percent !== undefined && item.remaining !== undefined ? ` 剩${item.remaining}` : ''}
                           </span>
                           {reset && <span className="dq-item-reset">{reset}</span>}
+                          {item.etaMinutes !== undefined && (
+                            <span className="dq-item-eta" title="按当前窗口段的平均消耗速率预估">
+                              {item.burnRatePerHour !== undefined ? `≈${item.burnRatePerHour}/h · ` : ''}{etaText(item.etaMinutes)}
+                            </span>
+                          )}
                         </div>
                       )
                     })}
@@ -409,7 +529,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
           </div>
         </div>
       )}
-      {pill}
+      {floater}
     </div>
   )
 }

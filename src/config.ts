@@ -37,6 +37,10 @@ export interface QuotaItem {
   resetAt?: string
   /** Free-form display string (money, tokens, raw counts). */
   display?: string
+  /** Average consumption rate over the current window segment (%/h or units/h). */
+  burnRatePerHour?: number
+  /** Estimated minutes until depletion at the current burn rate. */
+  etaMinutes?: number
 }
 
 /** How the snapshot was obtained. */
@@ -123,6 +127,10 @@ export interface Config {
   loginFlows: LoginFlow[]
   /** DSH 模型供应商 id → 其 apiKeyEnv 凭证引用（当前模型与平台卡片按引用精确对应）。 */
   providerKeyRefs: Record<string, string>
+  /** 时序采样历史：`${providerId}::${itemLabel}` → [epochMs, value][]（告警/速率/ETA 用，不含任何凭据）。 */
+  history: Record<string, number[][]>
+  /** 用量占比达到该百分比即计入红点告警（默认 85，与进度条红色档一致）。 */
+  alertPercent: number
   /** DSH 当前默认模型及其额度摘要（pill 展示；取不到时字段为空）。 */
   currentModel: {
     /** 模型供应商 id，如 kimi-coding。 */
@@ -167,6 +175,8 @@ export const Config: z<Config> = z.object({
     afterLogin: z.string(),
   })).default([]),
   providerKeyRefs: z.dict(z.string()).default({}),
+  history: z.dict(z.array(z.array(z.number()))).default({}),
+  alertPercent: z.number().default(85),
   currentModel: z.object({
     provider: z.string().default(''),
     model: z.string().default(''),
@@ -189,6 +199,8 @@ export const Config: z<Config> = z.object({
       percent: z.number(),
       resetAt: z.string(),
       display: z.string(),
+      burnRatePerHour: z.number(),
+      etaMinutes: z.number(),
     })).default([]),
   })).default([]),
 }) as z<Config>

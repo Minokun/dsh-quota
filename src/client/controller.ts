@@ -16,6 +16,10 @@ export interface PanelItem {
   percent?: number
   resetAt?: string
   display?: string
+  /** 当前窗口段的平均消耗速率（%/h 或单位/h，host 按时序采样计算）。 */
+  burnRatePerHour?: number
+  /** 按当前速率预估的耗尽时间（分钟）。 */
+  etaMinutes?: number
 }
 
 /** One platform row as rendered by the panel. */
@@ -163,6 +167,8 @@ export interface QuotaPanelState {
   providerKeyRefs: Record<string, string>
   /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
   loginAlerts: Array<{ id: string; label: string }>
+  /** 用量占比告警阈值（host 下发，默认 85）。 */
+  alertPercent: number
 }
 
 /** The registration-side face the slot entry injects. */
@@ -216,6 +222,7 @@ const INITIAL: QuotaPanelState = {
   keyPlatforms: [],
   providerKeyRefs: {},
   loginAlerts: [],
+  alertPercent: 85,
 }
 
 const API_PREFIX = '/plugins/dsh-quota/api'
@@ -320,7 +327,7 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string> }>('/status')
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number }>('/status')
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -332,6 +339,7 @@ export class QuotaPanelController {
         loginFlows: state.loginFlows ?? {},
         keyPlatforms: state.keyPlatforms ?? [],
         providerKeyRefs: state.providerKeyRefs ?? {},
+        alertPercent: state.alertPercent ?? 85,
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})

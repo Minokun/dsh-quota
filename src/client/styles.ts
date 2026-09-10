@@ -26,6 +26,52 @@ export const PANEL_CSS = `
 .dq-dot--err { background: #e74c3c; box-shadow: 0 0 6px rgba(231, 76, 60, 0.7); }
 .dq-dot--idle { background: #888; }
 .dq-pill .dq-pill-name { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dq-pill { position: relative; }
+
+/* 红点告警 Badge：失败平台 + 越阈值条目 + 登录失效提醒的合计数量。 */
+.dq-alert {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px;
+  padding: 0 4px; border-radius: 999px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #e74c3c; color: #fff; font-size: 10px; font-weight: 700; line-height: 1;
+  box-shadow: 0 0 0 2px var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92));
+  animation: dq-alert-pulse 2s ease-in-out infinite; pointer-events: none;
+}
+@keyframes dq-alert-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+/* HUD 悬浮环：SVG 环形进度（剩余额度），中心为剩余百分比。 */
+.dq-ring {
+  position: relative; width: 52px; height: 52px; padding: 0; cursor: grab; user-select: none;
+  touch-action: none; border-radius: 50%; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.35));
+  background: var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: transform 0.12s ease, border-color 0.12s ease, opacity 0.2s ease;
+}
+.dq-ring:hover { transform: translateY(-1px); border-color: var(--dsw-alias-brand-primary, #5b6cff); }
+.dq-ring-svg { width: 46px; height: 46px; display: block; }
+.dq-ring-track { fill: none; stroke: rgba(128, 128, 128, 0.25); stroke-width: 4.5; }
+.dq-ring-arc {
+  fill: none; stroke-width: 4.5; stroke-linecap: round;
+  transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+}
+.dq-ring-arc--ok { stroke: #3ddc84; }
+.dq-ring-arc--warn { stroke: #f5a623; }
+.dq-ring-arc--danger { stroke: #e74c3c; }
+.dq-ring-text {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary, #eee); pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+/* 贴边微缩：拖到左右边缘时半隐，悬停恢复。 */
+.dq-floater--edge-l { transform: translateX(-55%); opacity: 0.45; }
+.dq-floater--edge-r { transform: translateX(55%); opacity: 0.45; }
+.dq-floater--edge-l:hover, .dq-floater--edge-r:hover { transform: translateX(0); opacity: 1; }
 .dq-pill .dq-pill-model {
   font-size: 11px; font-weight: 600; max-width: 210px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -85,6 +131,7 @@ export const PANEL_CSS = `
 .dq-item-fill--danger { background: linear-gradient(90deg, #e74c3c, #ff7b54); }
 .dq-item-value { flex: none; text-align: right; color: var(--dsw-alias-label-secondary, #999); font-variant-numeric: tabular-nums; font-size: 11px; }
 .dq-item-reset { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; }
+.dq-item-eta { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; font-variant-numeric: tabular-nums; }
 
 .dq-keys { border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2)); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .dq-keys-toggle {
