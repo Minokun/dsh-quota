@@ -334,6 +334,52 @@ const neuralwattQuota: FormatParser = (body) => {
   return items
 }
 
+/**
+ * OpenAI Admin API cost buckets (`/v1/organization/costs`, bucket_width=1d).
+ * Amounts are USD floats at `results[].amount.value`; buckets ascend and may
+ * be empty. Requires an organization Admin key (`sk-admin-…`) — a normal
+ * project key cannot read this endpoint.
+ */
+const openaiCosts: FormatParser = (body) => {
+  const raw = body as Record<string, unknown>
+  const buckets = (Array.isArray(raw.data) ? raw.data : []) as Array<Record<string, unknown>>
+  if (buckets.length === 0) throw new Error('no cost buckets returned (does this key have Admin API access?)')
+  const sum = (from: number): number => buckets
+    .filter((b) => (num(b.start_time) ?? 0) >= from)
+    .reduce((total, b) => total + ((Array.isArray(b.results) ? b.results : []) as Array<Record<string, unknown>>)
+      .reduce((s, r) => s + (num((r.amount as Record<string, unknown> | undefined)?.value) ?? 0), 0), 0)
+  const nowSec = Math.floor(Date.now() / 1000)
+  const today = (num(buckets[buckets.length - 1]!.start_time) ?? 0)
+  return [
+    { label: '今日消耗', display: `$${sum(today).toFixed(2)}` },
+    { label: '近 7 天消耗', display: `$${sum(nowSec - 7 * 86400).toFixed(2)}` },
+    { label: '近 30 天消耗', display: `$${sum(nowSec - 30 * 86400).toFixed(2)}` },
+  ]
+}
+
+/**
+ * Anthropic Admin API cost report (`/v1/organizations/cost_report`). Amounts
+ * arrive as decimal STRINGS in the lowest currency unit (cents): "123.45"
+ * USD means $1.2345. Requires an Admin API key (sk-ant-admin…) — workspace
+ * keys are rejected upstream.
+ */
+const anthropicCosts: FormatParser = (body) => {
+  const raw = body as Record<string, unknown>
+  const buckets = (Array.isArray(raw.data) ? raw.data : []) as Array<Record<string, unknown>>
+  if (buckets.length === 0) throw new Error('no cost buckets returned (does this key have Admin API access?)')
+  const sum = (from: number): number => buckets
+    .filter((b) => Date.parse(str(b.starting_at) ?? '') >= from)
+    .reduce((total, b) => total + ((Array.isArray(b.results) ? b.results : []) as Array<Record<string, unknown>>)
+      .reduce((s, r) => s + (Number(str(r.amount) ?? 0) || 0) / 100, 0), 0)
+  const today = Date.parse(str(buckets[buckets.length - 1]!.starting_at) ?? '')
+  const dayStart = Number.isNaN(today) ? Date.now() : today
+  return [
+    { label: '今日消耗', display: `$${sum(dayStart).toFixed(2)}` },
+    { label: '近 7 天消耗', display: `$${sum(Date.now() - 7 * 86400_000).toFixed(2)}` },
+    { label: '近 30 天消耗', display: `$${sum(Date.now() - 30 * 86400_000).toFixed(2)}` },
+  ]
+}
+
 /** Quota formats reusable by catalog entries and user-declared platforms. */
 export const FORMATS: Record<string, FormatParser> = {
   'kimi-coding': kimiCoding,
@@ -349,6 +395,8 @@ export const FORMATS: Record<string, FormatParser> = {
   'deepinfra-billing': deepinfraBilling,
   'venice-balance': veniceBalance,
   'neuralwatt-quota': neuralwattQuota,
+  'openai-costs': openaiCosts,
+  'anthropic-costs': anthropicCosts,
 }
 
 /** Formats offered in the panel for user-declared custom HTTP platforms. */
@@ -364,15 +412,26 @@ interface CatalogEntry {
   format: string
   /** Suffix resolved from the response (e.g. plan level). */
   planOf?: (body: unknown) => string | undefined
+  /** How the key is presented: `Authorization: Bearer` (default) or `x-api-key`. */
+  auth?: 'bearer' | 'x-api-key'
+  /** Extra request headers (e.g. anthropic-version). */
+  headers?: Record<string, string>
+  /** Full URL builder for endpoints that need query parameters. */
+  buildUrl?: (now: number) => string
+  /** Gray note rendered under the card head (e.g. what the API cannot report). */
+  note?: string
 }
 
 function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) => Promise<ProviderSnapshot> {
   const parser = FORMATS[entry.format]
   if (!parser) throw new Error(`unknown format ${entry.format}`)
   return async (key, signal) => {
-    const headers: Record<string, string> = { Authorization: `Bearer ${key}` }
+    const headers: Record<string, string> = entry.auth === 'x-api-key'
+      ? { 'x-api-key': key, ...entry.headers }
+      : { Authorization: `Bearer ${key}`, ...entry.headers }
     if (entry.format === 'kimi-coding') headers['User-Agent'] = UA
-    const body = await getJson(entry.endpoint, headers, signal)
+    const url = entry.buildUrl ? entry.buildUrl(Date.now()) : entry.endpoint
+    const body = await getJson(url, headers, signal)
     const items = parser(body)
     const plan = entry.planOf?.(body)
     return {
@@ -380,6 +439,7 @@ function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) 
       label: plan ? `${entry.label} · ${plan}` : entry.label,
       status: 'ok',
       via: 'api',
+      ...(entry.note ? { message: entry.note } : {}),
       items,
     }
   }
@@ -430,6 +490,28 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
   entry({ id: 'deepinfra', label: 'DeepInfra', keyRefs: ['DEEPINFRA_API_KEY', 'DEEPINFRA_TOKEN'], endpoint: 'https://api.deepinfra.com/payment/checklist?compute_owed=true', format: 'deepinfra-billing' }),
   entry({ id: 'venice', label: 'Venice', keyRefs: ['VENICE_API_KEY', 'VENICE_KEY'], endpoint: 'https://api.venice.ai/api/v1/billing/balance', format: 'venice-balance' }),
   entry({ id: 'neuralwatt', label: 'NeuralWatt', keyRefs: ['NEURALWATT_API_KEY'], endpoint: 'https://api.neuralwatt.com/v1/quota', format: 'neuralwatt-quota' }),
+  // 国外官方平台：需要组织级 Admin key（普通 sk-* / 项目 key 会被上游拒绝），
+  // 只能拿到用量/成本，拿不到余额——卡片上用 note 明确说明。
+  entry({
+    id: 'openai-admin',
+    label: 'OpenAI Platform',
+    keyRefs: ['OPENAI_ADMIN_KEY'],
+    endpoint: 'https://api.openai.com/v1/organization/costs',
+    format: 'openai-costs',
+    note: 'Admin API：仅用量/成本，余额见 OpenAI 后台',
+    buildUrl: (now) => `https://api.openai.com/v1/organization/costs?start_time=${String(Math.floor(now / 1000) - 30 * 86400)}&bucket_width=1d&limit=31`,
+  }),
+  entry({
+    id: 'anthropic-admin',
+    label: 'Anthropic Claude',
+    keyRefs: ['ANTHROPIC_ADMIN_KEY'],
+    endpoint: 'https://api.anthropic.com/v1/organizations/cost_report',
+    format: 'anthropic-costs',
+    auth: 'x-api-key',
+    headers: { 'anthropic-version': '2023-06-01', 'User-Agent': UA },
+    note: 'Admin API：仅用量/成本（无余额接口）',
+    buildUrl: (now) => `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${new Date(now - 30 * 86400_000).toISOString()}&bucket_width=1d&limit=31`,
+  }),
 ]
 
 /** Every credential ref the direct side may consume (for change watching). */

@@ -59,8 +59,12 @@
   时间与 ETA 格式全部本地化，`tests/locale.test.ts` 校验两语言键集一致且 en 文案无中文残留。
   已知边界：host 下发的平台条目名（如「周额度」）与上游报错原文仍为中文（数据面，后续可用结构化
   tag 字段彻底解决）；`tools.ts` 的工具 description 暂保持中文+英文混排。
-- **阶段 3 · OpenAI/Claude 适配器**：OpenAI `/v1/organization/costs`（admin key）、
-  Anthropic Admin `cost_report`（无余额 API，只展示用量/成本）、可选 Codex(Wham) 订阅额度。
+- **阶段 3 · OpenAI/Claude 适配器 ✅ 已完成（0.12.0）**：OpenAI `/v1/organization/costs`
+  （Bearer admin key，`amount.value` 美元）与 Anthropic Admin `/v1/organizations/cost_report`
+  （`x-api-key` + `anthropic-version`，金额为「分」已换算）两个目录适配器，展示今日/近 7 天/近 30 天
+  消耗；卡片上用 note 说明「Admin API 无余额接口」。目录条目新增 `auth`/`headers`/`buildUrl`/`note`
+  能力，为后续同类平台铺路。测试：tests/costs.test.ts（端点 URL、鉴权头、分→美元换算、空桶报错）。
+  仍未做：Codex(ChatGPT 订阅额度，需要读 ~/.codex/auth.json 的 OAuth token，属本地凭据型适配器)。
 - **阶段 4 · 体验补强**：一键测试连接 + 毫秒延迟；自定义端点安全加固（DNS/TLS/大小上限）。
 - **远期**：用量台账 + CNY 成本分析 + CSV 导出（参考 Lottle7）。
 

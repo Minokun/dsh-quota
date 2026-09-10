@@ -93,6 +93,8 @@ export function platformForProvider(provider: string): string {
   if (p.includes('step')) return 'stepfun'
   if (p.includes('xai') || p.includes('grok')) return 'xai'
   if (p.includes('opencode')) return 'opencode-go'
+  if (p.includes('openai')) return 'openai-admin'
+  if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
   return ''
 }
 
@@ -117,7 +119,7 @@ export function summarizeItems(provider: PanelProvider | undefined, lang: Lang =
     const tag = shortTag(item.label, lang)
     return tag ? `${tag} ${value}` : value
   }
-  const headlines = provider.items.filter((i) => /窗口|周|余额|额度|金额/.test(i.label))
+  const headlines = provider.items.filter((i) => /窗口|周|余额|额度|金额|消耗/.test(i.label))
   const parts = (headlines.length > 0 ? headlines : provider.items)
     .map(head)
     .filter((v): v is string => Boolean(v))
