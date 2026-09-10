@@ -18,7 +18,7 @@ import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, Provider
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
-import { MCP_ADAPTERS, customAdapter, runMcpAdapter, type McpAdapter } from './mcp.ts'
+import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
@@ -186,23 +186,31 @@ export class QuotaController implements QuotaControllerFace {
   private readonly getCustomPlatforms: () => CustomMcpPlatform[]
   private readonly getDefaultModel: () => DefaultModelSelection | undefined
   private readonly getProviders: () => LlmProviderInfo[]
+  private readonly getDshMcpServers: () => Set<string> | undefined
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviders: () => LlmProviderInfo[] = () => []) {
+  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviders: () => LlmProviderInfo[] = () => [], getDshMcpServers: () => Set<string> | undefined = () => undefined) {
     this.ctx = ctx
     this.getScope = getScope
     this.getCredentials = getCredentials
     this.getCustomPlatforms = getCustomPlatforms
     this.getDefaultModel = getDefaultModel
     this.getProviders = getProviders
+    this.getDshMcpServers = getDshMcpServers
   }
 
-  /** Built-in MCP adapters plus user-declared ones (id collisions ignored). */
+  /**
+   * Built-in MCP adapters restricted to the servers DSH's composition
+   * declares (plus user-declared custom platforms, which are themselves DSH
+   * config). A built-in platform whose server DSH does not run is not
+   * queried at all, so it cannot produce a phantom failure row.
+   */
   private mcpAdapters(): McpAdapter[] {
     const builtinIds = new Set(MCP_ADAPTERS.map((a) => a.id))
     const custom = this.getCustomPlatforms()
       .filter((p) => p.id && p.label && p.tools.length > 0 && !builtinIds.has(p.id))
       .map(customAdapter)
-    return [...MCP_ADAPTERS, ...custom]
+    const builtins = selectConfiguredAdapters(MCP_ADAPTERS, this.getDshMcpServers())
+    return [...builtins, ...custom]
   }
 
   /** Current panel state (composition defaults before first refresh). */

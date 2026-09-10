@@ -22,6 +22,31 @@ export interface McpAdapter {
   parse(results: Array<{ name: string; value: unknown }>): QuotaItem[]
 }
 
+/** MCP server names an adapter reads through (`mcp__<server>__<tool>`). */
+export function mcpServerNames(adapter: McpAdapter): string[] {
+  const names = new Set<string>()
+  for (const call of adapter.calls) {
+    const parts = call.name.split('__')
+    if (parts.length >= 3 && parts[0] === 'mcp' && parts[1]) names.add(parts[1])
+  }
+  return [...names]
+}
+
+/**
+ * Keep only the adapters whose MCP server the DSH composition declares.
+ *
+ * `configured` comes from the loader entry tree (see dsh-config.ts). It is
+ * `undefined` when that service is unavailable, in which case every adapter
+ * is kept and the tool registry alone decides (previous behaviour). An empty
+ * set means DSH declares no MCP servers at all: every MCP platform is
+ * skipped, so the panel shows no phantom rows for servers the harness is not
+ * configured to run.
+ */
+export function selectConfiguredAdapters(adapters: McpAdapter[], configured: Set<string> | undefined): McpAdapter[] {
+  if (configured === undefined) return adapters
+  return adapters.filter((a) => mcpServerNames(a).some((name) => configured.has(name)))
+}
+
 function num(v: unknown): number | undefined {
   const n = Number(v)
   return Number.isFinite(n) ? n : undefined

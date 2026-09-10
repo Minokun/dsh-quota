@@ -76,3 +76,17 @@
 
 - 不做浏览器本地预算管理（Lottle7 路线），与本插件"纯查询快照"定位保持轻量。
 - 历史采样只存数值对，不存任何凭据/原文，隐私面不扩大。
+
+## 五、平台发现规则（2026-09-10 修订）
+
+用户反馈「TokenRouter 已经不用了，插件还在报它失败」。排查结论与设计修订：
+
+- **根因**：DSH 的 profile composition（`~/.dsh/profiles/web/cordis.patch.yml`）里仍声明着
+  `mcp-tokenrouter` 条目，且该站点自己关闭了 secure API（`secure_api_enabled: false`，
+  经其配置的代理实测确认）。插件只是如实反映「DSH 配置了、但查询失败」。
+- **修订**：平台存在与否**以 DSH 系统配置为准**——Host 半边新增 `src/dsh-config.ts`，
+  通过 cordis `loader` 服务的 entry 树枚举 `@deepseek-ai/dsh-mcp-client` 条目的 `serverName`；
+  MCP 适配器只在对应 serverName 被声明时才查询（`selectConfiguredAdapters`）。
+  不再以项目 `.mcp.json` 或"工具恰好注册"为依据；loader 不可用时退回旧行为（向后兼容）。
+- **运维含义**：要下线一个 MCP 平台，改 DSH composition（删条目 + 重启），插件自动跟随，
+  不再需要理解插件的内部列表。

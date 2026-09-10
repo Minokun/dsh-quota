@@ -42,6 +42,8 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 **MCP 平台**（纯可选扩展，通过另行注册的 `mcp__*` 工具取数；本仓库不包含这些 MCP 服务器）：智谱 BigModel、通义千问（百炼）、超算互联网、TokenRouter、SupaWriter。没注册时对应平台自动隐藏。
 
+**平台来源以 DSH 系统配置为准**：MCP 平台行只在 **DSH composition（profile 的 `cordis.yml` / `cordis.patch.yml`）声明了对应的 `@deepseek-ai/dsh-mcp-client` 条目**时才创建——Host 半边通过 cordis loader 服务读取真实的 entry 树，而不是看项目里的 `.mcp.json`、也不是"恰好存在同名工具"；composition 里删掉条目（并重启 dsh）后，对应平台立即从面板消失。loader 服务不可用的旧版本上自动退回"工具注册表探测"。
+
 **自定义平台**：有余额 API 的平台（聚合站 / one-api / new-api…）在面板底部「自定义平台」直接添加，或在 config 里声明 `httpPlatforms` / `mcpPlatforms` —— 详见 **[docs/extending.md](docs/extending.md)**（含"如何把网页 Cookie 平台做成 MCP 接入"的完整指南）。
 
 NewAPI 有两种口径：`openai-billing` 使用模型 `sk-*` key 查询该 key 的额度；`newapi-account` 使用个人设置里的系统访问令牌与用户 ID 查询 `/api/user/self`，显示整个账号的余额和累计用量。

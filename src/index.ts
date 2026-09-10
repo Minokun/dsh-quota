@@ -15,6 +15,7 @@ import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings
 import { Config, QUOTA_NS } from './config.ts'
 import { QuotaController } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
+import { configuredMcpServers } from './dsh-config.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
 
@@ -72,6 +73,10 @@ export function apply(ctx: Context, config: Config): void {
       }
       return out
     },
+    // DSH 系统配置（profile composition 的 loader 条目）是"哪些 MCP 平台存在"
+    // 的唯一依据：只有 composition 里声明了 dsh-mcp-client 的 serverName，
+    // 对应平台才会被查询；loader 服务不可用时返回 undefined，退回工具注册表探测。
+    () => configuredMcpServers(ctx),
   )
   registerTools(ctx, quota)
 
