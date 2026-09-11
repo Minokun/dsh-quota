@@ -4,3 +4,6 @@ lib/
 *.log
 .DS_Store
 *recovery*
+
+# vendored packages keep their lib/ (the lib/ rule above is for our build output)
+!vendor/dsh-client-store/lib/

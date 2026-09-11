@@ -52,6 +52,9 @@
       ],
       "@deepseek-ai/dsh-client-ui-layout/client": [
         "../../deepseek-harness/packages/client/ui-layout/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-model-selection/client": [
+        "../../deepseek-harness/packages/client/ui-model-selection/lib/types/client/index.d.ts"
       ]
     }
   },
