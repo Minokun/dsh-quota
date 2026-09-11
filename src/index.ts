@@ -6,7 +6,9 @@
  *
  * Keys sync from DSH automatically: the direct adapters resolve the same
  * credential refs DSH's model providers declare, and every committed change
- * in the credentials domain (`credentials/updated`) triggers a refresh.
+ * in the credentials domain (`credentials/updated` on dsh ≤0.1.4;
+ * `credentials/reference-updated` / `credentials/record-updated` on 0.1.5+)
+ * triggers a refresh.
  * @module dsh-quota
  */
 
@@ -108,9 +110,13 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   // Auto-sync: a key added/changed in DSH (any known ref, including custom
-  // platforms' keyRefs) refreshes the panel.
+  // platforms' keyRefs) refreshes the panel. dsh ≤0.1.4 emitted one
+  // `credentials/updated` event; 0.1.5 splits it into
+  // `credentials/reference-updated` (per ref) and `credentials/record-updated`
+  // (per record key) — subscribe to all of them; names the running dsh does
+  // not emit simply never fire.
   let pending: ReturnType<typeof setTimeout> | undefined
-  ctx.on('credentials/updated', (ref) => {
+  const onCredentialTouched = (ref: unknown): void => {
     const custom = quota.state().httpPlatforms.some((p) => p.keyRef === (ref as string))
     if (!KNOWN_REFS.has(ref as string) && !custom) return
     if (pending !== undefined) clearTimeout(pending)
@@ -118,7 +124,13 @@ export function apply(ctx: Context, config: Config): void {
       pending = undefined
       void quota.refresh()
     }, CREDENTIAL_REFRESH_DEBOUNCE_MS)
-  })
+  }
+  const CREDENTIAL_EVENTS: readonly string[] = [
+    'credentials/updated',
+    'credentials/reference-updated',
+    'credentials/record-updated',
+  ]
+  for (const event of CREDENTIAL_EVENTS) ctx.on(event as 'credentials/updated', onCredentialTouched)
   ctx.effect(() => () => {
     if (pending !== undefined) clearTimeout(pending)
   })
