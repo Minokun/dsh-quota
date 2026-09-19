@@ -6,6 +6,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { QuotaControllerFace } from './controller.ts'
+import { jsonSafe } from './json-safe.ts'
 
 export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
   ctx.tools.register(defineTool({
@@ -77,7 +78,7 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
     },
     async execute() {
       const state = await quota.refresh()
-      return {
+      return jsonSafe({
         refreshedAt: state.refreshedAt,
         providers: state.providers.map((p) => ({
           id: p.id,
@@ -87,7 +88,7 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
           via: p.via,
           items: p.items,
         })),
-      }
+      })
     },
   }))
 }
