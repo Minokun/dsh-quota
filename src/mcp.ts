@@ -309,8 +309,11 @@ const supawriter: McpAdapter = {
         continue
       }
       const dashboard = (direct.dashboard ?? {}) as Record<string, unknown>
-      const used = num(dashboard.quota_used ?? dashboard.monthly_articles)
-      const total = num(dashboard.quota_total)
+      // `/subscription/quota` is the authoritative monthly figure the site's
+      // workbench shows; `/dashboard`'s own quota_used/quota_total is legacy.
+      const quota = (direct.quota ?? {}) as Record<string, unknown>
+      const used = num(quota.plan_used ?? dashboard.quota_used ?? dashboard.monthly_articles)
+      const total = num(quota.plan_quota ?? dashboard.quota_total)
       if (total !== undefined) {
         items.push({
           label: '月度文章额度',
