@@ -284,6 +284,20 @@ export function QuotaPanel(props: QuotaPanelProps) {
     ? pos.x <= 12 ? 'l' : pos.x + pos.w >= window.innerWidth - 12 ? 'r' : ''
     : ''
 
+  // 点击面板外部自动收起：面板打开时在 document 捕获阶段监听 pointerdown，
+  // 目标落在根元素（悬浮球 + 面板 + toast）之外就关闭。悬浮球在根元素内，
+  // 其 click 切换逻辑不受影响。
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!state.open) return
+    const onDown = (e: PointerEvent): void => {
+      const root = rootRef.current
+      if (root && e.target instanceof Node && !root.contains(e.target)) props.close()
+    }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => { document.removeEventListener('pointerdown', onDown, true) }
+  }, [state.open])
+
   // 红点告警 Badge（两种形态共用）。
   const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
 
@@ -353,7 +367,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const floater = mode === 'ring' ? ring : pill
 
   return (
-    <div className="dq-root" style={rootStyle}>
+    <div ref={rootRef} className="dq-root" style={rootStyle}>
       {state.loginAlerts.map((a) => (
         <div key={a.id} className="dq-toast" role="alert">
           <span className="dq-toast-text">{t('toast.loginExpired', { label: a.label })}</span>
