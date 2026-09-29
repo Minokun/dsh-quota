@@ -25,6 +25,22 @@ export type { QuotaStateStore } from './state-store.ts'
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
 
+/** Delay before the in-refresh retry of a transiently-failed provider fetch. */
+const FETCH_RETRY_DELAY_MS = 2000
+
+/** 刷新失败后的自动补刷节奏：30s 起步、指数退避、上限 4 分钟。 */
+const FAILURE_RETRY_BASE_MS = 30000
+const FAILURE_RETRY_MAX_MS = 240000
+
+/** 网络抖动/限流/5xx 值得当场重试一次；401/403 等鉴权错误重试无意义。 */
+function isTransientFailure(message: string): boolean {
+  return !/^HTTP 4\d\d/.test(message) || /^HTTP (408|429)/.test(message)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /** Built-in login pages for the known MCP platforms (config loginFlows override). */
 const DEFAULT_LOGIN_URLS: Record<string, string> = {
   scnet: 'https://www.scnet.cn/',
@@ -209,6 +225,50 @@ export class QuotaController implements QuotaControllerFace {
     this.getDefaultModel = getDefaultModel
     this.getProviders = getProviders
     this.getDshMcpServers = getDshMcpServers
+    ctx.effect(() => () => {
+      if (this.retryTimer !== undefined) clearTimeout(this.retryTimer)
+    })
+  }
+
+  /** In-flight refresh, for the single-flight guard. */
+  private inFlight: Promise<Config> | undefined
+  /** 失败后自动补刷的定时器与退避序号。 */
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+  private retryAttempt = 0
+
+  /**
+   * 失败看门狗：本轮出现 error 行（或整轮抛错）时安排一次提前补刷，
+   * 指数退避到 4 分钟封顶；全部恢复则清零。周期刷新之外的自愈通道，
+   * 网络抖动不再要等到下一个 5 分钟周期。
+   */
+  private scheduleFailureRetry(hasError: boolean): void {
+    if (this.retryTimer !== undefined) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = undefined
+    }
+    if (!hasError) {
+      this.retryAttempt = 0
+      return
+    }
+    const delay = Math.min(FAILURE_RETRY_BASE_MS * 2 ** this.retryAttempt, FAILURE_RETRY_MAX_MS)
+    this.retryAttempt += 1
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined
+      void this.refresh()
+    }, delay)
+    this.retryTimer.unref?.()
+  }
+
+  /** Refresh every platform; concurrent callers share one in-flight round trip. */
+  async refresh(): Promise<Config> {
+    if (this.inFlight) return this.inFlight
+    const run = this.doRefresh()
+    this.inFlight = run
+    try {
+      return await run
+    } finally {
+      if (this.inFlight === run) this.inFlight = undefined
+    }
   }
 
   /**
@@ -282,8 +342,8 @@ export class QuotaController implements QuotaControllerFace {
     return [...DIRECT_ADAPTERS, ...CATALOG_EXTRA, ...this.customHttpAdapters()]
   }
 
-  /** Refresh every platform; failures are contained per platform. */
-  async refresh(): Promise<Config> {
+  /** Refresh body (single-flight wrapper is `refresh`). Failures stay per platform. */
+  private async doRefresh(): Promise<Config> {
     await this.patch({ refreshing: true })
     const startedAt = new Date().toISOString()
     try {
@@ -316,19 +376,29 @@ export class QuotaController implements QuotaControllerFace {
         const multi = keys.length > 1
         return Promise.all(keys.map(async (key): Promise<ProviderSnapshot> => {
           const id = multi ? `${adapter.id}#${key.ref}` : adapter.id
+          const fail = (message: string): ProviderSnapshot => ({
+            id,
+            label: adapter.label,
+            status: 'error',
+            message,
+            via: 'api',
+            keyRef: key.ref,
+            keySource: key.source,
+            items: [],
+          })
           try {
             const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
             return { ...snapshot, id, keyRef: key.ref, keySource: key.source }
           } catch (error) {
-            return {
-              id,
-              label: adapter.label,
-              status: 'error',
-              message: error instanceof Error ? error.message : String(error),
-              via: 'api',
-              keyRef: key.ref,
-              keySource: key.source,
-              items: [],
+            // 网络抖动/限流/5xx 当场重试一次（鉴权错误重试无意义）。
+            const message = error instanceof Error ? error.message : String(error)
+            if (!isTransientFailure(message)) return fail(message)
+            await sleep(FETCH_RETRY_DELAY_MS)
+            try {
+              const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+              return { ...snapshot, id, keyRef: key.ref, keySource: key.source }
+            } catch (retryError) {
+              return fail(retryError instanceof Error ? retryError.message : String(retryError))
             }
           }
         }))
@@ -423,10 +493,16 @@ export class QuotaController implements QuotaControllerFace {
         const key = await resolveKey(credentials, [lp.keyRef], [lp.keyRef])
         if (!key) continue
         const rowId = `probe#${lp.id}`
+        const baseURL = lp.baseURL
+        const probeOnce = async (): Promise<Response> => fetch(`${baseURL!.replace(/\/+$/, '')}/models`, {
+          headers: { Authorization: `Bearer ${key.value}` },
+          signal: AbortSignal.timeout(8000),
+        })
         try {
-          const resp = await fetch(`${lp.baseURL.replace(/\/+$/, '')}/models`, {
-            headers: { Authorization: `Bearer ${key.value}` },
-            signal: AbortSignal.timeout(8000),
+          const resp = await probeOnce().catch(async (): Promise<Response> => {
+            // 抖动当场重试一次再认输。
+            await sleep(FETCH_RETRY_DELAY_MS)
+            return probeOnce()
           })
           providers.push(resp.ok
             ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, message: '该平台无 API-key 额度接口，仅探测服务可用性', items: [{ label: '模型服务', display: '在线' }] }
@@ -454,10 +530,13 @@ export class QuotaController implements QuotaControllerFace {
 
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history }
       await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history })
+      // 有失败行就安排提前补刷（退避到 4 分钟封顶），全绿则清零。
+      this.scheduleFailureRetry(providers.some((p) => p.status === 'error'))
       return state
     } catch (error) {
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false }
       await this.patch({ refreshing: false })
+      this.scheduleFailureRetry(true)
       return state
     }
   }
