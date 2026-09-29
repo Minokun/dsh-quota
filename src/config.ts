@@ -7,6 +7,16 @@
 
 import z from '@deepseek-ai/schemastery'
 
+/**
+ * Mark a Config field live-editable without remounting (the new dsh settings
+ * service only persists volatile paths at runtime). Older schemastery builds
+ * lack `.volatile()` — degrade to a plain field there.
+ */
+function live<T>(schema: z<T>): z<T> {
+  const volatile_ = (schema as unknown as { volatile?: () => z<T> }).volatile
+  return typeof volatile_ === 'function' ? volatile_.call(schema) : schema
+}
+
 /** Settings namespace shared by the Host half and the browser panel. */
 export const QUOTA_NS = 'quota'
 
@@ -159,7 +169,9 @@ export const Config: z<Config> = z.object({
     label: z.string(),
     tools: z.array(z.string()),
   })).default([]),
-  httpPlatforms: z.array(z.object({
+  // 面板运行时增删的用户自定义平台必须持久化：新版 dsh 的 settings.update
+  // 只接受 volatile 路径，故标记为 live（旧版 schemastery 退化为普通字段）。
+  httpPlatforms: live(z.array(z.object({
     id: z.string(),
     label: z.string(),
     endpoint: z.string(),
@@ -167,7 +179,7 @@ export const Config: z<Config> = z.object({
     format: z.string(),
     userId: z.string().default(''),
     quotaPerUnit: z.number().default(500000),
-  })).default([]),
+  })).default([])),
   loginFlows: z.array(z.object({
     id: z.string(),
     url: z.string(),

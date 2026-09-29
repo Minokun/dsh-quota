@@ -18,6 +18,7 @@ import { Config, QUOTA_NS } from './config.ts'
 import { QuotaController } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
 import { configuredMcpServers } from './dsh-config.ts'
+import { createStateStore, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
 
@@ -35,18 +36,35 @@ const CREDENTIAL_REFRESH_DEBOUNCE_MS = 800
 /** Every credential ref the built-in direct catalog may consume. */
 const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
 
+/** Structural face of the legacy (dsh ≤ 0.1.5) settings service. */
+interface LegacySettingsLike {
+  register?: (ns: SettingsNamespace, schema: unknown, options: { base: Config }) => SettingsScope<Config>
+}
+
 /**
- * Mount the plugin: register the refresh tool, persist the snapshot into the
- * `quota` settings namespace, reconcile API keys via the credentials domain,
- * and serve the panel API when a web server exists (headless compositions
- * keep the tool only).
+ * Mount the plugin: register the refresh tool, keep the panel snapshot in the
+ * state store (composition config base + runtime overlay; legacy settings
+ * namespace on old dsh), reconcile API keys via the credentials domain, and
+ * serve the panel API when a web server exists (headless compositions keep
+ * the tool only).
  */
 export function apply(ctx: Context, config: Config): void {
-  let scope: SettingsScope<Config> | undefined
-  let settingsSvc: { describe?: (options?: { redactSecrets?: boolean }) => Array<{ ns: string; value: unknown }> } | undefined
+  let legacyScope: SettingsScope<Config> | undefined
+  let settingsForms: SettingsFormsLike | undefined
+  let settingsSvc: (SettingsFormsLike & LegacySettingsLike) | undefined
+  const entryId = (ctx as unknown as { fiber?: { entry?: { options?: { id?: unknown } } } }).fiber?.entry?.options?.id
+
+  const store = createStateStore({
+    config,
+    entryNs: typeof entryId === 'string' && entryId ? entryId : QUOTA_NS,
+    getSettingsForms: () => settingsForms,
+    getLegacyScope: () => legacyScope,
+    onWarn: (message) => { ctx.logger.warn(`quota: ${message}`) },
+  })
+
   const quota = new QuotaController(
     ctx,
-    () => scope,
+    store,
     () => ctx.get('credentials'),
     () => config.mcpPlatforms ?? [],
     () => {
@@ -83,8 +101,16 @@ export function apply(ctx: Context, config: Config): void {
   registerTools(ctx, quota)
 
   ctx.inject(['settings'], (sctx) => {
-    settingsSvc = sctx.settings as typeof settingsSvc
-    scope = sctx.settings.register(QUOTA_NS as SettingsNamespace, Config, { base: config })
+    const svc = sctx.settings as unknown as SettingsFormsLike & LegacySettingsLike
+    settingsSvc = svc
+    if (typeof svc?.update === 'function') settingsForms = svc
+    // 旧版 dsh（≤0.1.5）：settings.register 存在时注册命名空间 scope；新版
+    // 该 API 已移除，静默落到「组合配置 + 内存覆盖层」。
+    try {
+      if (typeof svc?.register === 'function') legacyScope = svc.register(QUOTA_NS as SettingsNamespace, Config, { base: config })
+    } catch (error) {
+      ctx.logger.warn(`quota: legacy settings namespace unavailable, runtime state stays in memory: ${error instanceof Error ? error.message : String(error)}`)
+    }
   })
 
   // Boot refresh after MCP servers have had a chance to connect and sync

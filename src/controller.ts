@@ -11,7 +11,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
@@ -19,6 +18,9 @@ import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
+import type { QuotaStateStore } from './state-store.ts'
+
+export type { QuotaStateStore } from './state-store.ts'
 
 /** How long one provider may take before it is marked failed. */
 const PROVIDER_TIMEOUT_MS = 20000
@@ -78,7 +80,10 @@ function platformForProvider(provider: string): string {
   if (p.includes('deepseek')) return 'deepseek'
   if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
   if (p.includes('zai')) return 'zhipu'
+  if (p.includes('bigmodel')) return 'bigmodel'
   if (p.includes('qwen') || p.includes('dashscope')) return 'qianwen' // 注意：不带 'bailian'——自定义 bailian 供应商常是别人的 key，映射到自己账号的 MCP 行会显示错账号
+  if (p.includes('scnet')) return 'scnet'
+  if (p.includes('tokenrouter')) return 'tokenrouter'
   if (p.includes('moonshot')) return 'moonshot'
   if (p.includes('openrouter')) return 'openrouter'
   if (p.includes('siliconflow')) return 'siliconflow'
@@ -89,6 +94,14 @@ function platformForProvider(provider: string): string {
   if (p.includes('openai')) return 'openai-admin'
   if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
   return ''
+}
+
+/**
+ * 平台别名：配置了某家的模型供应商时，同厂的其他额度行也一并放行
+ * （如 glm/zhipu 模型 → 智谱 Coding Plan 直连行 + BigModel 账户余额 MCP 行）。
+ */
+const PLATFORM_ALIASES: Record<string, string[]> = {
+  zhipu: ['bigmodel'],
 }
 
 /** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周, "300m 窗口"→300m. */
@@ -181,16 +194,16 @@ export interface QuotaControllerFace {
 
 export class QuotaController implements QuotaControllerFace {
   private readonly ctx: Context
-  private readonly getScope: () => SettingsScope<Config> | undefined
+  private readonly store: QuotaStateStore
   private readonly getCredentials: () => CredentialProvider | undefined
   private readonly getCustomPlatforms: () => CustomMcpPlatform[]
   private readonly getDefaultModel: () => DefaultModelSelection | undefined
   private readonly getProviders: () => LlmProviderInfo[]
   private readonly getDshMcpServers: () => Set<string> | undefined
 
-  constructor(ctx: Context, getScope: () => SettingsScope<Config> | undefined, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviders: () => LlmProviderInfo[] = () => [], getDshMcpServers: () => Set<string> | undefined = () => undefined) {
+  constructor(ctx: Context, store: QuotaStateStore, getCredentials: () => CredentialProvider | undefined, getCustomPlatforms: () => CustomMcpPlatform[] = () => [], getDefaultModel: () => DefaultModelSelection | undefined = () => undefined, getProviders: () => LlmProviderInfo[] = () => [], getDshMcpServers: () => Set<string> | undefined = () => undefined) {
     this.ctx = ctx
-    this.getScope = getScope
+    this.store = store
     this.getCredentials = getCredentials
     this.getCustomPlatforms = getCustomPlatforms
     this.getDefaultModel = getDefaultModel
@@ -199,30 +212,55 @@ export class QuotaController implements QuotaControllerFace {
   }
 
   /**
+   * 显示门槛：只查询/显示 DSH 模型配置（llm-pi-ai 供应商）对应的平台——
+   * 按供应商 id 映射平台（含别名），或按供应商的 apiKeyEnv 精确对应
+   * （自定义供应商 id 也能命中）。返回 undefined 表示主机未上报模型
+   * 供应商（旧版本/headless 组合），此时不加门槛、保持旧行为。
+   * 用户在面板里显式添加的自定义平台不受此门槛限制。
+   */
+  private activePlatformGate(): { platforms: Set<string>; refs: Set<string> } | undefined {
+    const providers = this.getProviders()
+    if (providers.length === 0) return undefined
+    const platforms = new Set<string>()
+    const refs = new Set<string>()
+    for (const lp of providers) {
+      const platform = platformForProvider(lp.id)
+      if (platform) {
+        platforms.add(platform)
+        for (const alias of PLATFORM_ALIASES[platform] ?? []) platforms.add(alias)
+      }
+      if (lp.keyRef) refs.add(lp.keyRef)
+    }
+    return { platforms, refs }
+  }
+
+  /**
    * Built-in MCP adapters restricted to the servers DSH's composition
    * declares (plus user-declared custom platforms, which are themselves DSH
    * config). A built-in platform whose server DSH does not run is not
-   * queried at all, so it cannot produce a phantom failure row.
+   * queried at all, so it cannot produce a phantom failure row. On top of
+   * that, the model-provider gate keeps only platforms DSH models actually
+   * use — MCP servers registered for agent tools alone no longer surface.
    */
   private mcpAdapters(): McpAdapter[] {
     const builtinIds = new Set(MCP_ADAPTERS.map((a) => a.id))
     const custom = this.getCustomPlatforms()
       .filter((p) => p.id && p.label && p.tools.length > 0 && !builtinIds.has(p.id))
       .map(customAdapter)
+    const gate = this.activePlatformGate()
     const builtins = selectConfiguredAdapters(MCP_ADAPTERS, this.getDshMcpServers())
+      .filter((a) => gate === undefined || gate.platforms.has(a.id))
     return [...builtins, ...custom]
   }
 
-  /** Current panel state (composition defaults before first refresh). */
+  /** Current panel state (composition defaults before the first refresh). */
   state(): Config {
-    return this.getScope()?.get() ?? { refreshedAt: '', refreshing: false, refreshOnBoot: true, refreshIntervalMinutes: 0, mcpPlatforms: [], httpPlatforms: [], loginFlows: [], providerKeyRefs: {}, history: {}, alertPercent: 85, currentModel: EMPTY_CURRENT_MODEL, providers: [] }
+    return this.store.get()
   }
 
-  /** Patch the settings namespace (no-op without a settings service). */
+  /** Patch the panel state (the host store decides persistence). */
   private async patch(patch: Partial<Config>): Promise<void> {
-    const scope = this.getScope()
-    if (scope === undefined) return
-    await scope.update(patch)
+    await this.store.update(patch)
   }
 
   /** Custom HTTP platforms as direct adapters (built-in catalog ids win). */
@@ -298,11 +336,18 @@ export class QuotaController implements QuotaControllerFace {
 
       const customHttp = this.customHttpAdapters()
 
+      // 模型供应商门槛：内置直连平台也只在 DSH 模型配置用到时才查询
+      // （按平台 id 或按供应商 apiKeyEnv 命中）；用户显式添加的自定义
+      // 平台保持 pinned，不受门槛限制。
+      const gate = this.activePlatformGate()
+      const directVisible = (a: DirectAdapter): boolean =>
+        gate === undefined || gate.platforms.has(a.id) || [...a.keyRefs, ...a.envKeys].some((r) => gate.refs.has(r))
+
       const directJobs = [
         // Built-ins are all auto-discovered now: no key → no row. Only
         // user-declared custom platforms stay pinned (explicit user intent).
-        ...DIRECT_ADAPTERS.map((a) => runDirect(a, false)),
-        ...CATALOG_EXTRA.map((a) => runDirect(a, false)),
+        ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(a, false)),
+        ...CATALOG_EXTRA.filter(directVisible).map((a) => runDirect(a, false)),
         ...customHttp.map((a) => runDirect(a, true)),
       ]
 
