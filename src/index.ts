@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings'
 import { Config, QUOTA_NS } from './config.ts'
-import { QuotaController } from './controller.ts'
+import { QuotaController, type LlmProviderInfo } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
 import { configuredMcpServers } from './dsh-config.ts'
 import { createStateStore, type SettingsFormsLike } from './state-store.ts'
@@ -39,6 +39,89 @@ const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
 /** Structural face of the legacy (dsh ≤ 0.1.5) settings service. */
 interface LegacySettingsLike {
   register?: (ns: SettingsNamespace, schema: unknown, options: { base: Config }) => SettingsScope<Config>
+}
+
+/** Structural face of the host `llm` service's provider directory. */
+interface LlmDirectoryLike {
+  listProviders?(): Array<{ id: string; name?: string }>
+  listConfigurableProviders?(): Array<{
+    provider: string
+    displayName?: string
+    settingsNs: string
+    settingsPath?: readonly string[]
+  }>
+}
+
+/** Walk a settings path (e.g. `['providers', 'kimi-coding']`) into a descriptor value. */
+function atPath(value: unknown, path: readonly string[]): unknown {
+  let node: unknown = value
+  for (const key of path) {
+    if (node === null || typeof node !== 'object') return undefined
+    node = (node as Record<string, unknown>)[key]
+  }
+  return node
+}
+
+/** Volatile profile fields the panel needs: credential ref, endpoint, display label. */
+function profileFacts(profile: unknown): { keyRef?: string; baseURL?: string; label?: string } {
+  if (profile === null || typeof profile !== 'object') return {}
+  const row = profile as Record<string, unknown>
+  const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
+  const keyRef = text(row.apiKeyEnv)
+  const baseURL = text(row.baseURL)
+  const label = text(row.displayName) ?? text(row.name)
+  return {
+    ...keyRef === undefined ? {} : { keyRef },
+    ...baseURL === undefined ? {} : { baseURL },
+    ...label === undefined ? {} : { label },
+  }
+}
+
+/**
+ * Model providers DSH actually serves, with their credential refs.
+ *
+ * `ctx.llm` is the authority: `listProviders()` is every route with a
+ * registered adapter — pi-ai gateways and native families such as
+ * `deepseek-official` alike — and `listConfigurableProviders()` says which
+ * settings namespace + path holds each route's volatile profile, where
+ * `apiKeyEnv` / `baseURL` live. Reading one hardcoded namespace (as before)
+ * missed every native provider, so a DeepSeek session resolved no quota row.
+ * Without the llm service (older dsh, headless composition) the previous
+ * llm-pi-ai-only read stays as the fallback.
+ * @param ctx - host plugin context.
+ * @param settings - live settings forms (undefined before the service mounts).
+ * @returns provider rows keyed by their model-provider id.
+ */
+export function llmProvidersOf(ctx: Context, settings: SettingsFormsLike | undefined): LlmProviderInfo[] {
+  const values = new Map<string, unknown>((settings?.describe?.() ?? []).map((d) => [d.ns, d.value]))
+  const llm = ctx.get('llm') as LlmDirectoryLike | undefined
+  const configurable = llm?.listConfigurableProviders?.() ?? []
+  const byProvider = new Map(configurable.map((entry) => [entry.provider, entry]))
+  const out: LlmProviderInfo[] = []
+  const seen = new Set<string>()
+  const take = (id: string, profile: unknown, fallbackLabel?: string): void => {
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    const facts = profileFacts(profile)
+    out.push({
+      id,
+      label: facts.label ?? fallbackLabel ?? id,
+      ...facts.keyRef === undefined ? {} : { keyRef: facts.keyRef },
+      ...facts.baseURL === undefined ? {} : { baseURL: facts.baseURL },
+    })
+  }
+
+  for (const row of llm?.listProviders?.() ?? []) {
+    const entry = byProvider.get(row.id)
+    take(row.id, entry ? atPath(values.get(entry.settingsNs), entry.settingsPath ?? []) : undefined, entry?.displayName ?? row.name)
+  }
+  if (out.length > 0) return out
+
+  // Fallback: no llm registry — the llm-pi-ai namespace is the only window
+  // onto configured routes.
+  const configured = (values.get('llm-pi-ai') as { providers?: Record<string, unknown> } | undefined)?.providers
+  for (const [id, profile] of Object.entries(configured ?? {})) take(id, profile)
+  return out
 }
 
 /**
@@ -75,24 +158,7 @@ export function apply(ctx: Context, config: Config): void {
         ? { provider: v.provider, model: v.model }
         : undefined
     },
-    () => {
-      // llm-pi-ai namespace: providers.<id> → { apiKeyEnv, baseURL, displayName }
-      // — the model→platform correspondence keys on the exact credential ref,
-      // and unmatched providers get a liveness probe row.
-      const d = settingsSvc?.describe?.().find((x) => x.ns === 'llm-pi-ai')
-      const providers = (d?.value as { providers?: Record<string, { apiKeyEnv?: unknown; baseURL?: unknown; displayName?: unknown }> } | undefined)?.providers
-      if (!providers || typeof providers !== 'object') return []
-      const out: Array<{ id: string; label: string; keyRef?: string; baseURL?: string }> = []
-      for (const [id, p] of Object.entries(providers)) {
-        out.push({
-          id,
-          label: typeof p?.displayName === 'string' && p.displayName ? p.displayName : id,
-          ...(typeof p?.apiKeyEnv === 'string' && p.apiKeyEnv ? { keyRef: p.apiKeyEnv } : {}),
-          ...(typeof p?.baseURL === 'string' && p.baseURL ? { baseURL: p.baseURL } : {}),
-        })
-      }
-      return out
-    },
+    () => llmProvidersOf(ctx, settingsForms),
     // DSH 系统配置（profile composition 的 loader 条目）是"哪些 MCP 平台存在"
     // 的唯一依据：只有 composition 里声明了 dsh-mcp-client 的 serverName，
     // 对应平台才会被查询；loader 服务不可用时返回 undefined，退回工具注册表探测。

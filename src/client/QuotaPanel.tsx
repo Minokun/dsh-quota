@@ -13,6 +13,7 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
+import { visibleSessionIdOf } from './session-model.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
 /** Props the renderer binds for the quota panel. */
@@ -151,10 +152,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const okCount = state.providers.filter((p) => p.status === 'ok').length
   const totalCount = state.providers.length
 
-  // Follow the visible session's model: the sessions list standard prop
-  // reports the current session id; the controller subscribes to that
-  // session's model directory. Falls back to the host's default-model summary.
-  const currentSessionId = props.useSessions?.((s) => s.current)
+  // Follow the visible session's model. `useSessions` exposes the session
+  // LIST, and the visible session is the row the main view retains
+  // (`retainedBy.mainView`) — client runtimes ≤ 0.1.6 also carried a flat
+  // `current` id, which 0.1.7 dropped. Reading only `current` (as before) left
+  // this null forever on 0.1.7, so the pill froze on the deployment default
+  // model — and since a session's model switch also saves that default, it
+  // never came back. Falls back to the host default-model summary.
+  const currentSessionId = props.useSessions?.(visibleSessionIdOf)
   useEffect(() => {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
