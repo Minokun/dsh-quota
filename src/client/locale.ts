@@ -63,6 +63,13 @@ const zh = {
   'login.go': '去登录 ↗',
 
   'item.remaining': '剩{n}',
+
+  'session.card.title': '本会话',
+  'session.card.input': '输入（未缓存）',
+  'session.card.cacheRead': '缓存读',
+  'session.card.cacheWrite': '缓存写',
+  'session.card.output': '输出',
+  'session.card.cost': '≈ {cost}（估算）',
   'eta.title': '按当前窗口段的平均消耗速率预估',
   'eta.minutes': '约 {n} 分钟后耗尽',
   'eta.hours': '约 {n} 小时后耗尽',
@@ -164,6 +171,13 @@ const en: Record<LocaleKey, string> = {
   'login.go': 'Sign in ↗',
 
   'item.remaining': '{n} left',
+
+  'session.card.title': 'This session',
+  'session.card.input': 'Input (uncached)',
+  'session.card.cacheRead': 'Cache read',
+  'session.card.cacheWrite': 'Cache write',
+  'session.card.output': 'Output',
+  'session.card.cost': '≈ {cost} (est.)',
   'eta.title': 'Estimated from the average burn rate of the current window segment',
   'eta.minutes': 'depletes in ~{n} min',
   'eta.hours': 'depletes in ~{n} h',

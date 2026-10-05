@@ -15,7 +15,8 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
 import { formatEtaSpan } from './usage-alerts.ts'
-import { visibleSessionIdOf } from './session-model.ts'
+import { visibleSessionIdOf, sessionTokenUsageOf, type TokenUsageView } from './session-model.ts'
+import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
 /** Props the renderer binds for the quota panel. */
@@ -115,6 +116,16 @@ function etaText(minutes: number, t: TFn): string {
   return t('eta.days', { n: (minutes / 1440).toFixed(1) })
 }
 
+/** 本会话卡片的四个桶行（label locale key + token 数）。 */
+function usageRowValues(u: TokenUsageView): Array<{ key: 'session.card.input' | 'session.card.cacheRead' | 'session.card.cacheWrite' | 'session.card.output'; value: number }> {
+  return [
+    { key: 'session.card.input', value: u.uncachedInputTokens },
+    { key: 'session.card.cacheRead', value: u.cacheReadTokens },
+    { key: 'session.card.cacheWrite', value: u.cacheWriteTokens },
+    { key: 'session.card.output', value: u.outputTokens },
+  ]
+}
+
 /** localStorage key for the floater shape: 药丸 pill / 悬浮环 ring. */
 const MODE_KEY = 'dsh-quota:pill-mode'
 type FloaterMode = 'pill' | 'ring'
@@ -153,6 +164,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // model — and since a session's model switch also saves that default, it
   // never came back. Falls back to the host default-model summary.
   const currentSessionId = props.useSessions?.(visibleSessionIdOf)
+  // 本会话 token 用量投影（root 作用域可读）：selector 直接返回
+  // values.tokenUsage 对象引用，发布不变时不会触发重渲染。
+  const tokenUsage = props.useSessions?.(sessionTokenUsageOf)
   useEffect(() => {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
@@ -172,6 +186,19 @@ export function QuotaPanel(props: QuotaPanelProps) {
     : `${t('model.from.default')} ${state.currentModel.provider}/${state.currentModel.model}`
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
+
+  // ── 本会话 token 用量卡片数据 ───────────────────────────────────
+  // 四桶之和 > 0 才渲染；成本估算只在价格表命中（四桶单价齐全）时给出，
+  // 否则只显示 token 计数（estimateSessionCost 返回 undefined）。
+  const usageRows = tokenUsage ? usageRowValues(tokenUsage) : []
+  const usageTotal = usageRows.reduce((sum, r) => sum + r.value, 0)
+  const showUsageCard = usageTotal > 0
+  const sessionModelLabel = state.sessionModel ? `${state.sessionModel.provider}/${state.sessionModel.model}` : ''
+  const usageCost = showUsageCard
+    ? estimateSessionCost(state.sessionModel?.model ?? state.currentModel.model, tokenUsage!)
+    : undefined
+  // 成本文案（有价格才生成）。
+  const costText = usageCost ? t('session.card.cost', { cost: `$${formatUsd(usageCost.usd)}` }) : ''
 
   // 红点 = 用量越阈值条目 + 查询失败平台 + 登录失效提醒；面板头部、悬浮球
   // tooltip 与对应平台卡片共用 alerts.ts 的同一份判定。
@@ -411,6 +438,28 @@ export function QuotaPanel(props: QuotaPanelProps) {
           <div className="dq-panel-body">
             {state.loaded && state.providers.length === 0 && (
               <div className="dq-empty">{t('panel.empty')}</div>
+            )}
+            {showUsageCard && (
+              <div className="dq-provider dq-provider--session">
+                <div className="dq-provider-head">
+                  <span className="dq-provider-name">{t('session.card.title')}</span>
+                  {sessionModelLabel && <span className="dq-badge dq-badge--api">{sessionModelLabel}</span>}
+                </div>
+                <div className="dq-items">
+                  {usageRows.map((row) => (
+                    <div key={row.key} className="dq-item">
+                      <span className="dq-item-label">{t(row.key)}</span>
+                      <span className="dq-item-bar" style={{ background: 'transparent' }} />
+                      <span className="dq-item-value">{formatTokens(row.value)}</span>
+                    </div>
+                  ))}
+                </div>
+                {usageCost && (
+                  <span className="dq-provider-key" title={costText}>
+                    {costText}
+                  </span>
+                )}
+              </div>
             )}
             {state.providers.map((p) => {
               const cardAlerts = providerAlertLines(p, state, t)
