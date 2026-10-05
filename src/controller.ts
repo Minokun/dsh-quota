@@ -18,6 +18,7 @@ import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
 import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
+import { fetchSubscriptionRows } from './subscription.ts'
 import type { QuotaStateStore } from './state-store.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
@@ -463,6 +464,12 @@ export class QuotaController implements QuotaControllerFace {
           return Array.isArray(s.value) ? s.value : [s.value]
         })
         .filter((p) => p.status !== 'missing-mcp')
+
+      // 订阅制平台（Claude Code / Codex OAuth）：与 DSH 模型配置无关，
+      // 不走 activePlatformGate 门槛——本地有登录凭证就显示，无凭证整行
+      // 隐藏（自动发现语义）。查询带 60s TTL 缓存兜底，看门狗退避补刷
+      // 不会把这两个限流端点打爆。
+      providers.push(...await fetchSubscriptionRows())
 
       // DSH 模型供应商：id → apiKeyEnv（供 pill 精确对应平台卡片）。
       const llmProviders = this.getProviders()
