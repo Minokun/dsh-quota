@@ -8,7 +8,7 @@
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { browserLang, translate, type Lang } from './locale.ts'
 import { trendValues } from './sparkline.ts'
-import { createUsageAlertState, evaluateUsageAlerts, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
+import { createUsageAlertState, deserializeUsageAlertState, evaluateUsageAlerts, serializeUsageAlertState, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
 
 /** One item row as rendered by the panel. */
 export interface PanelItem {
@@ -269,8 +269,8 @@ export class QuotaPanelController {
   private modelDirs: ModelDirectoriesLike | undefined
   /** 已忽略提醒的平台（恢复后再次失败会重新提醒）。 */
   private readonly dismissedAlerts = new Set<string>()
-  /** 用量告警状态机（跨越 / 耗尽规则的内存态，见 usage-alerts.ts）。 */
-  private usageState: UsageAlertState = createUsageAlertState()
+  /** 用量提醒状态机（每窗口一次的规则 + 持久化，见 usage-alerts.ts）。 */
+  private usageState: UsageAlertState = loadUsageAlertState()
   private unwatchModel: (() => void) | undefined
   private unwatchLocale: (() => void) | undefined
   private watchingSession: string | undefined
@@ -434,41 +434,30 @@ export class QuotaPanelController {
   /** Recompute the usage toasts from the latest provider rows (crossing + ETA rules). */
   private updateUsageAlerts(providers: PanelProvider[], alertPercent: number): void {
     const snap = this.store.getSnapshot()
-    const dismissed = new Set(snap.dismissedUsage)
-    const { alerts: fired, state } = evaluateUsageAlerts(providers, alertPercent, dismissed, this.usageState)
+    const { alerts: fired, state } = evaluateUsageAlerts(providers, alertPercent, this.usageState)
     this.usageState = state
-    // 条目消失或窗口重置（回落到阈值以下）后，解除对应的忽略记录。
+    saveUsageAlertState(this.usageState)
+    // 可见列表：本轮新触发的 + 仍在条件中的旧提醒（同 key+kind 去重），
+    // 超过 TTL 的自动收起——提醒记录已在 state.shown，不会重新弹。
+    const active = new Map(snap.usageAlerts.map((a) => [`${a.key}|${a.kind}`, a]))
+    const now = Date.now()
+    for (const a of fired) active.set(`${a.key}|${a.kind}`, { ...a, at: now })
     const itemOf = (a: { providerId: string; itemLabel: string }): { percent?: number; etaMinutes?: number } | undefined =>
       providers.find((p) => p.id === a.providerId && p.status === 'ok')?.items.find((i) => i.label === a.itemLabel)
-    for (const key of [...dismissed]) {
-      const sep = key.indexOf('::')
-      const item = itemOf({ providerId: sep > 0 ? key.slice(0, sep) : '', itemLabel: sep > 0 ? key.slice(sep + 2) : '' })
-      if (item === undefined || item.percent === undefined || item.percent < alertPercent) dismissed.delete(key)
-    }
-    // 旧告警保留仍未失效的，再并入本轮新触发的（同一 key+kind 去重）。
-    const active = new Map(snap.usageAlerts.map((a) => [`${a.key}|${a.kind}`, a]))
-    for (const a of fired) active.set(`${a.key}|${a.kind}`, a)
     for (const [id, a] of [...active]) {
       const item = itemOf(a)
       if (item === undefined) { active.delete(id); continue } // 平台失败或条目消失
       if (a.kind === 'threshold' && (item.percent === undefined || item.percent < alertPercent)) active.delete(id)
       if (a.kind === 'eta' && (item.etaMinutes === undefined || item.etaMinutes > 60)) active.delete(id)
+      if ((a.at ?? 0) !== 0 && now - (a.at ?? now) > ALERT_VISIBLE_MS) active.delete(id) // 自动收起
     }
-    this.patch({ usageAlerts: [...active.values()], dismissedUsage: [...dismissed] })
+    this.patch({ usageAlerts: [...active.values()] })
   }
 
-  /** Dismiss one usage toast until its percent climbs ≥5 points or the window resets. */
+  /** Dismiss one usage toast: the window stays marked shown, so it cannot re-fire. */
   private dismissUsageAlert(key: string): void {
     const snap = this.store.getSnapshot()
-    // dismissedAt 记录 dismiss 时的百分比，供 evaluate 的 +5 重触发规则使用。
-    const percent = snap.usageAlerts.find((a) => a.key === key)?.percent
-    const dismissedAt = new Map(this.usageState.dismissedAt)
-    if (percent !== undefined) dismissedAt.set(key, percent)
-    this.usageState = { ...this.usageState, dismissedAt }
-    this.patch({
-      usageAlerts: snap.usageAlerts.filter((a) => a.key !== key),
-      dismissedUsage: [...new Set([...snap.dismissedUsage, key])],
-    })
+    this.patch({ usageAlerts: snap.usageAlerts.filter((a) => a.key !== key) })
   }
 
   /** One-shot connectivity probe: latency on success, upstream error on failure. */
@@ -653,4 +642,27 @@ async function request<T>(path: string, body: Record<string, unknown> | undefine
     throw new Error((data as { statusMessage: string }).statusMessage)
   }
   return data
+}
+
+/** localStorage key for the once-per-window usage-alert state. */
+const USAGE_ALERT_STORE_KEY = 'dsh-quota:usage-alerts'
+/** 用量提醒 toast 的自动收起时长：条件仍满足也收起（不会重弹，窗口内只提醒一次）。 */
+const ALERT_VISIBLE_MS = 10 * 60 * 1000
+
+/** 读持久化的提醒状态；不可用 / 损坏时回退空白状态（每窗口重新提醒一次也无妨）。 */
+function loadUsageAlertState(): UsageAlertState {
+  try {
+    const raw = window.localStorage.getItem(USAGE_ALERT_STORE_KEY)
+    if (raw === null) return createUsageAlertState()
+    return deserializeUsageAlertState(raw) ?? createUsageAlertState()
+  } catch {
+    return createUsageAlertState() // 隐私模式等 localStorage 不可用
+  }
+}
+
+/** 把提醒状态写回 localStorage（失败静默：本次运行内规则仍生效）。 */
+function saveUsageAlertState(state: UsageAlertState): void {
+  try {
+    window.localStorage.setItem(USAGE_ALERT_STORE_KEY, serializeUsageAlertState(state))
+  } catch { /* 隐私模式等 localStorage 不可用 */ }
 }
