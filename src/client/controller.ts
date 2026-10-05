@@ -7,6 +7,7 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { browserLang, translate, type Lang } from './locale.ts'
+import { createUsageAlertState, evaluateUsageAlerts, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
 
 /** One item row as rendered by the panel. */
 export interface PanelItem {
@@ -173,6 +174,10 @@ export interface QuotaPanelState {
   providerKeyRefs: Record<string, string>
   /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
   loginAlerts: Array<{ id: string; label: string }>
+  /** 用量告警（悬浮球 toast：越阈值跨越 + 预计耗尽，见 usage-alerts.ts）。 */
+  usageAlerts: UsageAlert[]
+  /** 已忽略的用量告警 key（providerId::itemLabel，条目再涨 ≥5 或窗口重置后解除）。 */
+  dismissedUsage: string[]
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
   /** 正在测活的平台 id。 */
@@ -208,6 +213,8 @@ export interface QuotaPanelFace {
   loginRetry(platform: string): void
   /** Dismiss one login alert until the platform recovers and fails again. */
   dismissLogin(platform: string): void
+  /** Dismiss one usage toast until its percent climbs ≥5 points or the window resets. */
+  dismissUsageAlert(key: string): void
   /** Run a one-shot connectivity probe for one platform card. */
   probe(platform: string): void
 }
@@ -236,6 +243,8 @@ const INITIAL: QuotaPanelState = {
   keyPlatforms: [],
   providerKeyRefs: {},
   loginAlerts: [],
+  usageAlerts: [],
+  dismissedUsage: [],
   alertPercent: 85,
   probing: '',
   probeResults: {},
@@ -256,6 +265,8 @@ export class QuotaPanelController {
   private modelDirs: ModelDirectoriesLike | undefined
   /** 已忽略提醒的平台（恢复后再次失败会重新提醒）。 */
   private readonly dismissedAlerts = new Set<string>()
+  /** 用量告警状态机（跨越 / 耗尽规则的内存态，见 usage-alerts.ts）。 */
+  private usageState: UsageAlertState = createUsageAlertState()
   private unwatchModel: (() => void) | undefined
   private unwatchLocale: (() => void) | undefined
   private watchingSession: string | undefined
@@ -361,6 +372,7 @@ export class QuotaPanelController {
       loginStart: (platform) => { void this.loginStart(platform) },
       loginRetry: (platform) => { void this.loginRetry(platform) },
       dismissLogin: (platform) => { this.dismissLogin(platform) },
+      dismissUsageAlert: (key) => { this.dismissUsageAlert(key) },
       probe: (platform) => { void this.probe(platform) },
     }
   }
@@ -384,6 +396,7 @@ export class QuotaPanelController {
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
+      this.updateUsageAlerts(state.providers, state.alertPercent ?? 85)
     } catch {
       this.patch({ loaded: true, formError: translate(this.lang(), 'error.readStatus') })
     }
@@ -404,6 +417,46 @@ export class QuotaPanelController {
   private dismissLogin(platform: string): void {
     this.dismissedAlerts.add(platform)
     this.patch({ loginAlerts: this.store.getSnapshot().loginAlerts.filter((a) => a.id !== platform) })
+  }
+
+  /** Recompute the usage toasts from the latest provider rows (crossing + ETA rules). */
+  private updateUsageAlerts(providers: PanelProvider[], alertPercent: number): void {
+    const snap = this.store.getSnapshot()
+    const dismissed = new Set(snap.dismissedUsage)
+    const { alerts: fired, state } = evaluateUsageAlerts(providers, alertPercent, dismissed, this.usageState)
+    this.usageState = state
+    // 条目消失或窗口重置（回落到阈值以下）后，解除对应的忽略记录。
+    const itemOf = (a: { providerId: string; itemLabel: string }): { percent?: number; etaMinutes?: number } | undefined =>
+      providers.find((p) => p.id === a.providerId && p.status === 'ok')?.items.find((i) => i.label === a.itemLabel)
+    for (const key of [...dismissed]) {
+      const sep = key.indexOf('::')
+      const item = itemOf({ providerId: sep > 0 ? key.slice(0, sep) : '', itemLabel: sep > 0 ? key.slice(sep + 2) : '' })
+      if (item === undefined || item.percent === undefined || item.percent < alertPercent) dismissed.delete(key)
+    }
+    // 旧告警保留仍未失效的，再并入本轮新触发的（同一 key+kind 去重）。
+    const active = new Map(snap.usageAlerts.map((a) => [`${a.key}|${a.kind}`, a]))
+    for (const a of fired) active.set(`${a.key}|${a.kind}`, a)
+    for (const [id, a] of [...active]) {
+      const item = itemOf(a)
+      if (item === undefined) { active.delete(id); continue } // 平台失败或条目消失
+      if (a.kind === 'threshold' && (item.percent === undefined || item.percent < alertPercent)) active.delete(id)
+      if (a.kind === 'eta' && (item.etaMinutes === undefined || item.etaMinutes > 60)) active.delete(id)
+    }
+    this.patch({ usageAlerts: [...active.values()], dismissedUsage: [...dismissed] })
+  }
+
+  /** Dismiss one usage toast until its percent climbs ≥5 points or the window resets. */
+  private dismissUsageAlert(key: string): void {
+    const snap = this.store.getSnapshot()
+    // dismissedAt 记录 dismiss 时的百分比，供 evaluate 的 +5 重触发规则使用。
+    const percent = snap.usageAlerts.find((a) => a.key === key)?.percent
+    const dismissedAt = new Map(this.usageState.dismissedAt)
+    if (percent !== undefined) dismissedAt.set(key, percent)
+    this.usageState = { ...this.usageState, dismissedAt }
+    this.patch({
+      usageAlerts: snap.usageAlerts.filter((a) => a.key !== key),
+      dismissedUsage: [...new Set([...snap.dismissedUsage, key])],
+    })
   }
 
   /** One-shot connectivity probe: latency on success, upstream error on failure. */
@@ -511,6 +564,7 @@ export class QuotaPanelController {
         refreshedAt: state.refreshedAt,
         providers: state.providers,
       })
+      this.updateUsageAlerts(state.providers, this.store.getSnapshot().alertPercent)
     })
   }
 

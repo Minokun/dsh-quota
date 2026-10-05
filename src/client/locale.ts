@@ -67,6 +67,13 @@ const zh = {
   'eta.minutes': '约 {n} 分钟后耗尽',
   'eta.hours': '约 {n} 小时后耗尽',
   'eta.days': '约 {n} 天后耗尽',
+  'eta.span.minutes': '约 {n} 分钟',
+  'eta.span.hours': '约 {n} 小时',
+  'eta.span.days': '约 {n} 天',
+
+  'usageAlert.threshold': '{label} {item} 已用 {percent}%，即将见底',
+  'usageAlert.eta': '{label} {item} 预计 {eta} 后耗尽',
+  'usageAlert.view': '查看',
   'reset.today': '今天 {time} 重置',
   'reset.day': '{date} {time} 重置',
 
@@ -161,6 +168,13 @@ const en: Record<LocaleKey, string> = {
   'eta.minutes': 'depletes in ~{n} min',
   'eta.hours': 'depletes in ~{n} h',
   'eta.days': 'depletes in ~{n} d',
+  'eta.span.minutes': '~{n} min',
+  'eta.span.hours': '~{n} h',
+  'eta.span.days': '~{n} d',
+
+  'usageAlert.threshold': '{label} {item} at {percent}% — running low',
+  'usageAlert.eta': '{label} {item} depletes in {eta}',
+  'usageAlert.view': 'View',
   'reset.today': 'resets today {time}',
   'reset.day': 'resets {date} {time}',
 

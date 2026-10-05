@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
+import { formatEtaSpan } from './usage-alerts.ts'
 import { visibleSessionIdOf } from './session-model.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
@@ -377,6 +378,18 @@ export function QuotaPanel(props: QuotaPanelProps) {
             ? <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.loginRetry(a.id) }}>{t('toast.retry')}</button>
             : <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.loginStart(a.id) }}>{t('toast.login')}</button>}
           <button type="button" className="dq-btn dq-btn--ghost" title={t('toast.dismiss')} onClick={() => { props.dismissLogin(a.id) }}>✕</button>
+        </div>
+      ))}
+      {state.usageAlerts.map((a) => (
+        <div key={`${a.key}|${a.kind}`} className="dq-toast dq-toast--warn" role="alert">
+          <span aria-hidden="true">⚠</span>
+          <span className="dq-toast-text">
+            {a.kind === 'threshold'
+              ? t('usageAlert.threshold', { label: a.providerLabel, item: a.itemLabel, percent: Math.round(a.percent ?? 0) })
+              : t('usageAlert.eta', { label: a.providerLabel, item: a.itemLabel, eta: formatEtaSpan(a.etaMinutes ?? 0, t) })}
+          </span>
+          <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.toggle() }}>{t('usageAlert.view')}</button>
+          <button type="button" className="dq-btn dq-btn--ghost" title={t('toast.dismiss')} onClick={() => { props.dismissUsageAlert(a.key) }}>✕</button>
         </div>
       ))}
       {state.open && (

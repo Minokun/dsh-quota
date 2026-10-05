@@ -190,4 +190,6 @@ select.dq-input { appearance: auto; cursor: pointer; }
   font-size: 12px; pointer-events: auto;
 }
 .dq-toast-text { white-space: nowrap; }
+/* 用量告警（越阈值 / 预计耗尽）toast：琥珀色左边条与登录 toast 区分。 */
+.dq-toast--warn { border-left: 3px solid #f5a623; }
 `

@@ -17,6 +17,8 @@ const KEYS: LocaleKey[] = [
   'toast.loginExpired', 'toast.retry', 'toast.login', 'toast.dismiss',
   'login.done', 'login.go',
   'item.remaining', 'eta.title', 'eta.minutes', 'eta.hours', 'eta.days',
+  'eta.span.minutes', 'eta.span.hours', 'eta.span.days',
+  'usageAlert.threshold', 'usageAlert.eta', 'usageAlert.view',
   'reset.today', 'reset.day',
   'summary.remainingPercent', 'summary.remainingCount', 'tag.weekly', 'tag.monthly',
   'keys.title', 'keys.hint', 'keys.note', 'keys.configuredTitle', 'keys.unconfiguredTitle',
