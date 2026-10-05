@@ -7,7 +7,8 @@ const KEYS: LocaleKey[] = [
   'pill.defaultName', 'pill.title.default', 'pill.title.summary',
   'model.from.session', 'model.from.default',
   'ring.title.focus', 'ring.hint.pause',
-  'panel.title', 'panel.normalCount', 'panel.refresh', 'panel.refreshing', 'panel.empty',
+  'panel.title', 'panel.normalCount', 'panel.alerts', 'panel.refresh', 'panel.refreshing', 'panel.empty',
+  'alert.usage', 'alert.failed', 'alert.login', 'alert.list',
   'panel.footer.refreshedAt', 'panel.footer.never', 'mode.toRing', 'mode.toPill',
   'status.ok', 'status.error', 'status.missing-key', 'status.missing-mcp',
   'source.env', 'source.project-env', 'source.user-env', 'source.dsh',
@@ -44,8 +45,10 @@ test('en copy does not leak CJK ideographs (brand-free chrome)', () => {
 })
 
 test('translate interpolates {param} placeholders per locale', () => {
-  assert.equal(translate('zh', 'panel.normalCount', { ok: 3, total: 5 }), '3/5 正常')
-  assert.equal(translate('en', 'panel.normalCount', { ok: 3, total: 5 }), '3/5 OK')
+  assert.equal(translate('zh', 'panel.normalCount', { ok: 3, total: 5 }), '3/5 平台正常')
+  assert.equal(translate('en', 'panel.normalCount', { ok: 3, total: 5 }), '3/5 platforms OK')
+  assert.equal(translate('zh', 'alert.usage', { label: 'Kimi', item: '周额度', percent: 89 }), 'Kimi 周额度 已用 89%')
+  assert.equal(translate('en', 'panel.alerts', { n: 2 }), '⚠ 2 alerts')
   assert.equal(translate('en', 'eta.hours', { n: '2.3' }), 'depletes in ~2.3 h')
   assert.equal(translate('zh', 'item.remaining', { n: 120 }), '剩120')
 })

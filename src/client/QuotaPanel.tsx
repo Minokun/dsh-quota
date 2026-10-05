@@ -122,6 +122,25 @@ function alertCount(state: QuotaPanelState): number {
   return over + failed + state.loginAlerts.length
 }
 
+/**
+ * The badge counts three different things, so spell them out: the panel header
+ * and the pill tooltip list one line per counted alert. Without this, "2" sat
+ * beside a "7/7 正常" verdict that only reports query health.
+ */
+function alertDetails(state: QuotaPanelState, t: TFn): string[] {
+  const rows: string[] = []
+  for (const p of state.providers) {
+    if (p.status === 'error') rows.push(t('alert.failed', { label: p.label }))
+    for (const i of p.items) {
+      if (i.percent !== undefined && i.percent >= state.alertPercent) {
+        rows.push(t('alert.usage', { label: p.label, item: i.label, percent: Math.round(i.percent) }))
+      }
+    }
+  }
+  for (const a of state.loginAlerts) rows.push(t('alert.login', { label: a.label }))
+  return rows
+}
+
 /** localStorage key for the floater shape: 药丸 pill / 悬浮环 ring. */
 const MODE_KEY = 'dsh-quota:pill-mode'
 type FloaterMode = 'pill' | 'ring'
@@ -180,9 +199,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
+  // 红点 = 用量越阈值条目 + 查询失败平台 + 登录失效提醒；面板头部与悬浮球
+  // tooltip 都把它拆开讲清楚，避免与「N/N 平台正常」混淆。
+  const alerts = alertCount(state)
+  const alertLines = alertDetails(state, t)
+  const tooltip = summary ? t('pill.title.summary', { from: modelFrom, summary }) : t('pill.title.default')
+
   // ── 悬浮球形态（药丸/悬浮环）+ 红点告警 ─────────────────────────
   const [mode, setMode] = useState<FloaterMode>(() => (typeof window === 'undefined' ? 'pill' : loadMode()))
-  const alerts = alertCount(state)
   const toggleMode = (): void => {
     const next: FloaterMode = mode === 'pill' ? 'ring' : 'pill'
     setMode(next)
@@ -330,7 +354,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
       // pointer capture 丢失。
       style={flip ? { order: -1 } : undefined}
       {...dragHandlers}
-      title={summary ? t('pill.title.summary', { from: modelFrom, summary }) : t('pill.title.default')}
+      title={alertLines.length > 0 ? `${tooltip}\n${t('alert.list', { alerts: alertLines.join(' · ') })}` : tooltip}
     >
       <span className={`dq-dot ${dotClass(state)}`} />
       <span className="dq-pill-name">{modelName || t('pill.defaultName')}</span>
@@ -387,6 +411,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
           <div className="dq-panel-head">
             <span className="dq-panel-title">{t('panel.title')}</span>
             <span style={{ fontSize: 11, opacity: 0.6 }}>{totalCount > 0 ? t('panel.normalCount', { ok: okCount, total: totalCount }) : ''}</span>
+            {alerts > 0 && (
+              <span className="dq-panel-alert" title={alertLines.join('\n')}>{t('panel.alerts', { n: alerts })}</span>
+            )}
             <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
               {mode === 'pill' ? '◯' : '▬'}
             </button>

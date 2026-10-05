@@ -29,6 +29,11 @@ export const PANEL_CSS = `
 .dq-pill { position: relative; }
 
 /* 红点告警 Badge：失败平台 + 越阈值条目 + 登录失效提醒的合计数量。 */
+/* 头部告警角标：与「N/N 平台正常」并列，说明红点的构成。 */
+.dq-panel-alert {
+  font-size: 11px; font-weight: 600; color: #e74c3c; cursor: help;
+}
+
 .dq-alert {
   position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px;
   padding: 0 4px; border-radius: 999px; box-sizing: border-box;
