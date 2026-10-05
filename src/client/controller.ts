@@ -179,8 +179,6 @@ export interface QuotaPanelState {
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量告警（悬浮球 toast：越阈值跨越 + 预计耗尽，见 usage-alerts.ts）。 */
   usageAlerts: UsageAlert[]
-  /** 已忽略的用量告警 key（providerId::itemLabel，条目再涨 ≥5 或窗口重置后解除）。 */
-  dismissedUsage: string[]
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
   /** 正在测活的平台 id。 */
@@ -248,7 +246,6 @@ const INITIAL: QuotaPanelState = {
   loginAlerts: [],
   usageAlerts: [],
   trends: {},
-  dismissedUsage: [],
   alertPercent: 85,
   probing: '',
   probeResults: {},
