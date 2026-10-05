@@ -13,12 +13,12 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SettingsNamespace, SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { Config, QUOTA_NS } from './config.ts'
 import { QuotaController, type LlmProviderInfo } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
 import { configuredMcpServers } from './dsh-config.ts'
-import { createStateStore, type SettingsFormsLike } from './state-store.ts'
+import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
 
@@ -36,9 +36,14 @@ const CREDENTIAL_REFRESH_DEBOUNCE_MS = 800
 /** Every credential ref the built-in direct catalog may consume. */
 const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
 
-/** Structural face of the legacy (dsh ≤ 0.1.5) settings service. */
+/**
+ * Structural face of the legacy (dsh ≤ 0.1.5) settings service. `register` and
+ * its `SettingsScope` are gone from `@deepseek-ai/dsh-settings` (0.1.6 replaced
+ * them with the forms service), so the old shape is declared locally — the
+ * runtime probe below is the only thing that decides whether it is used.
+ */
 interface LegacySettingsLike {
-  register?: (ns: SettingsNamespace, schema: unknown, options: { base: Config }) => SettingsScope<Config>
+  register?: (ns: SettingsNamespace, schema: unknown, options: { base: Config }) => LegacyScopeLike
 }
 
 /** Structural face of the host `llm` service's provider directory. */
@@ -132,7 +137,7 @@ export function llmProvidersOf(ctx: Context, settings: SettingsFormsLike | undef
  * the tool only).
  */
 export function apply(ctx: Context, config: Config): void {
-  let legacyScope: SettingsScope<Config> | undefined
+  let legacyScope: LegacyScopeLike | undefined
   let settingsForms: SettingsFormsLike | undefined
   let settingsSvc: (SettingsFormsLike & LegacySettingsLike) | undefined
   const entryId = (ctx as unknown as { fiber?: { entry?: { options?: { id?: unknown } } } }).fiber?.entry?.options?.id
@@ -217,12 +222,13 @@ export function apply(ctx: Context, config: Config): void {
       void quota.refresh()
     }, CREDENTIAL_REFRESH_DEBOUNCE_MS)
   }
-  const CREDENTIAL_EVENTS: readonly string[] = [
-    'credentials/updated',
-    'credentials/reference-updated',
-    'credentials/record-updated',
-  ]
-  for (const event of CREDENTIAL_EVENTS) ctx.on(event as 'credentials/updated', onCredentialTouched)
+  // Structural registration: `credentials/updated` is the pre-0.1.5 name and
+  // is absent from the current Events map, so the emit name is a plain string
+  // here — the same three names also reach older and newer dsh builds.
+  const events = ctx as unknown as { on(event: string, listener: (ref: unknown) => void): unknown }
+  for (const event of ['credentials/updated', 'credentials/reference-updated', 'credentials/record-updated']) {
+    events.on(event, onCredentialTouched)
+  }
   ctx.effect(() => () => {
     if (pending !== undefined) clearTimeout(pending)
   })

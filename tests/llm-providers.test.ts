@@ -72,7 +72,7 @@ test('the settings service may arrive late: registered routes still gate platfor
   assert.deepEqual(llmProvidersOf(ctx, undefined), [{ id: 'deepseek-official', label: 'DeepSeek' }])
 })
 
-test('visible session: the main-view retention row wins over a legacy current id', () => {
+test('visible session: the main-view retention row (dsh ≥ 0.1.6-alpha.2) wins over a legacy current id', () => {
   assert.equal(visibleSessionIdOf({
     current: 'stale-session',
     byId: {
@@ -82,7 +82,7 @@ test('visible session: the main-view retention row wins over a legacy current id
   }), 'kimi-session')
 })
 
-test('visible session: legacy flat current id (client runtime ≤ 0.1.6) still resolves', () => {
+test('visible session: legacy flat current id (client runtime ≤ 0.1.6-alpha.1) still resolves', () => {
   assert.equal(visibleSessionIdOf({ current: 'kimi-session', byId: {} }), 'kimi-session')
   assert.equal(visibleSessionIdOf({ byId: {} }), undefined)
   assert.equal(visibleSessionIdOf(undefined), undefined)

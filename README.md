@@ -89,10 +89,16 @@ dsh plugin --profile web add dsh-quota
 
 ```sh
 pnpm install
+pnpm link-harness # 把类型/依赖对齐到本机已安装的 dsh（见下）
 pnpm build        # 构建 host + client，含 client-id 一致性门禁
 pnpm typecheck
 sh scripts/reload.sh   # 构建；Host 改动重启 dsh 生效，界面改动刷新页面生效
 ```
+
+`pnpm link-harness` 默认从**本机已安装的 dsh**（`npm root -g`，或 `DSH_INSTALL=<dsh 目录>`）
+软链 `node_modules/@deepseek-ai/*`，让 `typecheck`/`build` 与运行时解析同一份代码。
+改 dsh 源码时才用 `sh scripts/link-harness.sh --harness [checkout 路径]` 切到工作树构建。
+两者都没有时回退到仓库内 `vendor/`（schemastery / cordis / dsh-client-store）。
 
 ## 交流群
 

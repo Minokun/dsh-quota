@@ -8,8 +8,15 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: `ctx.slots` itself (ui-renderer is the package that provides it).
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: the `modelDirectories` service declaration on Context.
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+// Type-only: `ui-session` is what declares the `useSessions` framework standard
+// prop (and `SessionListState`, whose shape is what the pill reads). Without
+// this import the augmentation never reaches the program and `props.useSessions`
+// silently degrades to `any` — how the `current` regression shipped.
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import { QuotaPanel } from './QuotaPanel.tsx'
 import { QuotaPanelController, type ModelDirectoriesLike } from './controller.ts'
 import { PANEL_CSS, STYLE_TAG_ID } from './styles.ts'
