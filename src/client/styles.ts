@@ -109,6 +109,15 @@ export const PANEL_CSS = `
 
 .dq-panel-body { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
 .dq-provider { border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.22)); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+/* 有告警的平台：左侧红条 + 淡红底，在一列卡片里一眼可辨。 */
+.dq-provider--alert {
+  border-left: 3px solid #e74c3c; padding-left: 10px;
+  background: rgba(231, 76, 60, 0.05);
+}
+.dq-alert-chip {
+  flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px;
+  background: rgba(231, 76, 60, 0.16); color: #e74c3c; cursor: help;
+}
 .dq-provider-head { display: flex; align-items: center; gap: 8px; }
 .dq-provider-name { font-weight: 600; font-size: 13px; flex: 1; }
 .dq-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
@@ -139,6 +148,10 @@ export const PANEL_CSS = `
 .dq-item-fill--warn { background: linear-gradient(90deg, #f5a623, #f7ce46); }
 .dq-item-fill--danger { background: linear-gradient(90deg, #e74c3c, #ff7b54); }
 .dq-item-value { flex: none; text-align: right; color: var(--dsw-alias-label-secondary, #999); font-variant-numeric: tabular-nums; font-size: 11px; }
+/* 越阈值条目：数值标红加粗 + ⚠ 标记（阈值可配，故不依赖 60/85 的固定色档）。 */
+.dq-item--alert .dq-item-value { color: #e74c3c; font-weight: 700; }
+.dq-item--alert .dq-item-label { color: #e74c3c; }
+.dq-item-alert { flex: none; font-size: 10px; color: #e74c3c; cursor: help; }
 .dq-item-reset { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; }
 .dq-item-eta { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; font-variant-numeric: tabular-nums; }
 
