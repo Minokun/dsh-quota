@@ -148,6 +148,9 @@ export const PANEL_CSS = `
 .dq-item-fill--warn { background: linear-gradient(90deg, #f5a623, #f7ce46); }
 .dq-item-fill--danger { background: linear-gradient(90deg, #e74c3c, #ff7b54); }
 .dq-item-value { flex: none; text-align: right; color: var(--dsw-alias-label-secondary, #999); font-variant-numeric: tabular-nums; font-size: 11px; }
+/* 趋势 sparkline：默认次级色，越阈值条目随告警变红。 */
+.dq-item-spark { flex: none; color: var(--dsw-alias-label-tertiary, #777); }
+.dq-item--alert .dq-item-spark { color: #e74c3c; }
 /* 越阈值条目：数值标红加粗 + ⚠ 标记（阈值可配，故不依赖 60/85 的固定色档）。 */
 .dq-item--alert .dq-item-value { color: #e74c3c; font-weight: 700; }
 .dq-item--alert .dq-item-label { color: #e74c3c; }

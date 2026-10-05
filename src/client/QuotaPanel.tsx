@@ -17,6 +17,7 @@ import { alertCount, alertLines, providerAlertCount, providerAlertLines } from '
 import { formatEtaSpan } from './usage-alerts.ts'
 import { visibleSessionIdOf, sessionTokenUsageOf, type TokenUsageView } from './session-model.ts'
 import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
+import { sparklinePoints } from './sparkline.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
 /** Props the renderer binds for the quota panel. */
@@ -522,6 +523,24 @@ export function QuotaPanel(props: QuotaPanelProps) {
                           {percent !== undefined
                             ? <span className="dq-item-bar"><span className={`dq-item-fill ${fillClass(percent)}`} style={{ width: `${String(percent)}%` }} /></span>
                             : <span className="dq-item-bar" style={{ background: 'transparent' }} />}
+                          {(state.trends[`${p.id}::${item.label}`]?.length ?? 0) >= 3 && (
+                            <svg
+                              className="dq-item-spark"
+                              viewBox="0 0 48 14"
+                              width="48"
+                              height="14"
+                              aria-hidden="true"
+                            >
+                              <polyline
+                                points={sparklinePoints(state.trends[`${p.id}::${item.label}`] ?? [], 48, 14)}
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.25"
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                          )}
                           <span className="dq-item-value">
                             {value}
                             {percent !== undefined && item.remaining !== undefined ? ` ${t('item.remaining', { n: item.remaining })}` : ''}

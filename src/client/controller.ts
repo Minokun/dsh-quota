@@ -7,6 +7,7 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { browserLang, translate, type Lang } from './locale.ts'
+import { trendValues } from './sparkline.ts'
 import { createUsageAlertState, evaluateUsageAlerts, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
 
 /** One item row as rendered by the panel. */
@@ -141,6 +142,8 @@ export interface QuotaPanelState {
   open: boolean
   refreshedAt: string
   providers: PanelProvider[]
+  /** 各额度条目最近的已用百分比序列（`${providerId}::${itemLabel}` → 升序采样），供 sparkline。 */
+  trends: Record<string, number[]>
   keys: PanelKeyState
   /** Local form error. */
   formError: string
@@ -244,6 +247,7 @@ const INITIAL: QuotaPanelState = {
   providerKeyRefs: {},
   loginAlerts: [],
   usageAlerts: [],
+  trends: {},
   dismissedUsage: [],
   alertPercent: 85,
   probing: '',
@@ -380,7 +384,14 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number }>('/status', undefined, this.lang())
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
+      // /status 本就携带 history（host 时序采样），这里裁成每条目最近 30 个
+      // 采样值存入 trends，供面板条目的 sparkline 使用。
+      const trends: Record<string, number[]> = {}
+      for (const [key, row] of Object.entries(state.history ?? {})) {
+        const values = trendValues(row)
+        if (values.length > 0) trends[key] = values
+      }
       this.store.set({
         ...this.store.getSnapshot(),
         loaded: true,
@@ -393,6 +404,7 @@ export class QuotaPanelController {
         keyPlatforms: state.keyPlatforms ?? [],
         providerKeyRefs: state.providerKeyRefs ?? {},
         alertPercent: state.alertPercent ?? 85,
+        trends,
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
