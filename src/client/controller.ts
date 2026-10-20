@@ -23,6 +23,10 @@ export interface PanelItem {
   burnRatePerHour?: number
   /** 按当前速率预估的耗尽时间（分钟）。 */
   etaMinutes?: number
+  /** 余额型条目：近 7 天实测消耗（日历日均 ×7；不足 7 天按已观测跨度折算，与余额同币种）。 */
+  weeklySpent?: number
+  /** 余额型条目：weeklySpent 用到的实测跨度（毫秒）。 */
+  spendWindowMs?: number
 }
 
 /** One platform row as rendered by the panel. */
@@ -81,27 +85,7 @@ export interface ModelDirectoriesLike {
 }
 
 /** Map a model-provider id onto a quota platform id (mirror of the host side). */
-export function platformForProvider(provider: string): string {
-  const p = provider.toLowerCase()
-  if (p.includes('kimi')) return 'kimi'
-  if (p.includes('deepseek')) return 'deepseek'
-  if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
-  if (p.includes('zai')) return 'zhipu'
-  if (p.includes('bigmodel')) return 'bigmodel'
-  if (p.includes('qwen') || p.includes('dashscope')) return 'qianwen' // 注意：不带 'bailian'——自定义 bailian 供应商常是别人的 key，映射到自己账号的 MCP 行会显示错账号
-  if (p.includes('scnet')) return 'scnet'
-  if (p.includes('tokenrouter')) return 'tokenrouter'
-  if (p.includes('moonshot')) return 'moonshot'
-  if (p.includes('openrouter')) return 'openrouter'
-  if (p.includes('siliconflow')) return 'siliconflow'
-  if (p.includes('minimax')) return 'minimax'
-  if (p.includes('step')) return 'stepfun'
-  if (p.includes('xai') || p.includes('grok')) return 'xai'
-  if (p.includes('opencode')) return 'opencode-go'
-  if (p.includes('openai')) return 'openai-admin'
-  if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
-  return ''
-}
+export { platformForProvider } from './platform-map.ts'
 
 /** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周/wk, "300m 窗口"→300m. */
 function shortTag(label: string, lang: Lang): string {

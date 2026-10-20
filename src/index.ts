@@ -17,6 +17,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { Config, QUOTA_NS } from './config.ts'
 import { QuotaController, type LlmProviderInfo } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
+import { ARK_REFS } from './ark.ts'
 import { configuredMcpServers } from './dsh-config.ts'
 import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
@@ -33,8 +34,8 @@ const BOOT_REFRESH_DELAY_MS = 5000
 /** Debounce for credential-change refreshes (a batch of sets = one refresh). */
 const CREDENTIAL_REFRESH_DEBOUNCE_MS = 800
 
-/** Every credential ref the built-in direct catalog may consume. */
-const KNOWN_REFS = new Set(ALL_DIRECT_REFS)
+/** Every credential ref the built-in catalog (direct adapters + 火山方舟 AK/SK) may consume. */
+const KNOWN_REFS = new Set([...ALL_DIRECT_REFS, ...ARK_REFS])
 
 /**
  * Structural face of the legacy (dsh ≤ 0.1.5) settings service. `register` and

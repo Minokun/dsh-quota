@@ -23,9 +23,12 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 - **定时自动更新**：默认每 5 分钟刷新一次（`refreshIntervalMinutes` 可调）；打开面板时数据超过 5 分钟也会自动补刷；手动「刷新」随时可用
 - **进度条可视化**：用量占比彩色进度条（<60% 绿 / 60–85% 黄 / >85% 红），带重置时间
 - **配置哪些显示哪些**：只有 key 能解析（或 MCP 已注册）的平台才显示，没配置的平台不占面板
+- **当前平台优先**：面板里「当前在用」的模型所属平台的卡片自动排到最前（紧跟第一行的「本会话」用量卡片），换模型时顺序实时跟着变；其余平台仍按内置顺序（直连 API 在前、MCP 兜底在后）
+- **本会话用量可折叠**：面板第一行「本会话」默认收起，只显示模型与估算花费；点标题展开输入 / 缓存读 / 输出 token、估算成本与计费周期行（展开状态会记住）。余额型平台的计费周期行在样本不足 7 天时只报「近 N 天实测 + 日均」，不再把日均外推成「近 7 天总额」
 - **Key 自动同步**：直连平台的 API key 直接读 DSH 凭证域（与模型配置同一批 `apiKeyEnv` 引用）——DSH 里加过 key 就不用手动再填；凭证变更自动触发刷新
 - **手动 Key 兜底**：面板里可手动保存 key（存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置）
-- **消耗速率与剩余时长预估**：本地时序采样（≥10 分钟一个点、保留 14 天），在当前配额窗口段上计算平均消耗速率（%/h），条目下方给出「约 x 小时后耗尽」预估；窗口重置自动截断分段，不会跨重置算出错误速率；`quota_refresh` 工具同步透出
+- **消耗速率与剩余时长预估**：本地时序采样（≥10 分钟一个点、保留 14 天，落盘到 `$DSH_HOME/dsh-quota/history.json`，重启不清零），在当前配额窗口段上计算平均消耗速率（%/h），条目下方给出「约 x 小时后耗尽」预估；窗口重置自动截断分段，不会跨重置算出错误速率；`quota_refresh` 工具同步透出
+- **余额型平台的「近 7 天消耗 / 余额还能撑多久」**：余额条目按**日历时间**口径算——近 7 天实测余额降幅 ÷ 跨度（闲置时间也算进分母）得到真实日均，再外推 7 天花费与余额耗尽时间。样本跨度不足 24 小时不显示（几十分钟的活跃速率外推一周会放大 3 倍左右，这正是「日均 ¥20 却被算成 ¥430/周」的来源）；跨度不足 7 天会标注「按 N 天实测折算」
 - **一键测活**：每张卡片右上「测」按钮当场重跑该平台的查询，返回毫秒延迟（`✓ 320ms`）或上游原始错误；只读探测，不改动快照
 - **自定义端点安全校验**：接口地址必须是公网 HTTPS——拒绝内嵌用户名/密码、查询参数、`localhost`/`.local`/`.internal` 与回环/私有/链路本地/保留地址（含 IPv4/IPv6 字面量）；请求拒绝跟随 3xx 跳转、响应超过 256 KiB 直接失败，避免自定义平台被用来探测内网
 - **中英双语界面**：面板文案跟随 DSH 的语言设置（`ctx.locale` 服务）实时切换，缺失该服务时按浏览器语言自动判定；药丸/悬浮环/面板/错误提示/时间格式全部本地化（en 文案不含中文字符，有单测把关）
@@ -37,6 +40,8 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 **钉住平台**（始终显示，缺 key 时提示）：Kimi Code、DeepSeek、智谱 Coding Plan。
 
 **自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt、**OpenAI Platform**、**Anthropic Claude**。面板「API Key 管理」覆盖全部直连平台——填 key 即接入（写入 DSH 凭证域，模型配置也能用）。
+
+**火山方舟（Volcengine Ark）**：额度**不在推理 API 上**——`ARK_API_KEY`（`ark-…`）只能调模型，所以 DSH 里只配了它时，卡片只能探活显示「模型服务 在线」，这是设计如此、不是查询失败。套餐用量要走火山引擎**控制面 OpenAPI**（`open.volcengineapi.com`，`GetCodingPlanUsage` / `GetAgentPlanAFPUsage`，HMAC-SHA256 签名），必须用 **AccessKey ID + SecretAccessKey**：在面板底部「API Key 管理」里把两者按 `AK:SK`（或控制台给的合成串 `AK/SK`、整行 `AccessKeyID/SecretAccessKey: …`）填进「火山方舟 (AK/SK)」，插件会自动拆开，或直接写凭证引用 `VOLC_ACCESS_KEY_ID` / `VOLC_ACCESS_KEY_SECRET`（也认 `VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY` 等别名）。AK/SK 建议用 IAM 子用户并只授 `ArkReadOnlyAccess`（只读）；Coding Plan 与 Agent Plan 共用同一对 AK/SK，插件先试 Coding Plan、未订阅时自动落到 Agent Plan。
 
 **国外官方平台（用量/成本口径）**：OpenAI 走组织 Admin API `/v1/organization/costs`（凭证引用 `OPENAI_ADMIN_KEY`，即 `sk-admin-…`），Anthropic 走 Admin `cost_report`（凭证引用 `ANTHROPIC_ADMIN_KEY`，即 `sk-ant-admin…`，请求带 `anthropic-version`、金额单位是「分」已自动换算）。两家都**没有余额查询接口**，卡片展示「今日 / 近 7 天 / 近 30 天消耗」，并在卡片上注明；普通 `sk-*` / 项目 key 会被上游拒绝，不是插件的问题。
 

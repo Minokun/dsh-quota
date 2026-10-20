@@ -51,6 +51,10 @@ export interface QuotaItem {
   burnRatePerHour?: number
   /** Estimated minutes until depletion at the current burn rate. */
   etaMinutes?: number
+  /** 余额型条目：近 7 天实测消耗（日历日均 ×7；不足 7 天按已观测跨度折算，与余额同币种）。 */
+  weeklySpent?: number
+  /** 余额型条目：上面这个数用到的实测跨度（毫秒），客户端标注「按 N 天实测折算」。 */
+  spendWindowMs?: number
 }
 
 /** How the snapshot was obtained. */
@@ -213,6 +217,8 @@ export const Config: z<Config> = z.object({
       display: z.string(),
       burnRatePerHour: z.number(),
       etaMinutes: z.number(),
+      weeklySpent: z.number(),
+      spendWindowMs: z.number(),
     })).default([]),
   })).default([]),
 }) as z<Config>

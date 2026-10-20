@@ -92,7 +92,10 @@ export const PANEL_CSS = `
   display: flex; flex-direction: column;
 }
 .dq-panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2)); position: sticky; top: 0; background: inherit; border-radius: 14px 14px 0 0; }
-.dq-panel-title { font-weight: 600; font-size: 14px; flex: 1; }
+/* 头部：标题/告警/按钮都不换行（中文单字换行会竖排），平台计数挪到 footer。 */
+.dq-panel-title { font-weight: 600; font-size: 14px; flex: 1; white-space: nowrap; }
+.dq-panel-alert { white-space: nowrap; flex: none; }
+.dq-panel-head .dq-btn { flex: none; white-space: nowrap; }
 .dq-btn {
   padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 500; border: none; cursor: pointer;
   background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.15)); color: var(--dsw-alias-label-primary, #eee);
@@ -119,6 +122,27 @@ export const PANEL_CSS = `
   background: rgba(231, 76, 60, 0.16); color: #e74c3c; cursor: help;
 }
 .dq-provider-head { display: flex; align-items: center; gap: 8px; }
+/* 本会话卡片：整行头部就是折叠开关（默认收起），收起时右侧显示花费预览。 */
+.dq-session-toggle {
+  width: 100%; padding: 0; background: transparent; border: none; cursor: pointer;
+  text-align: left; color: inherit; font: inherit;
+}
+.dq-session-toggle:hover .dq-provider-name { color: var(--dsw-alias-brand-primary, #5b6cff); }
+/* 折叠成单行：标题保持自身宽度（不参与收缩，否则会被挤到 0 宽、文字叠到
+   徽标上），徽标吸收剩余空间并省略，花费预览保持完整。 */
+.dq-session-toggle .dq-provider-name { flex: 0 0 auto; white-space: nowrap; }
+.dq-session-peek {
+  flex: none; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* 会话徽标是长 provider/model 串：不换行、超长省略，别把折叠行撑成多行。 */
+.dq-session-toggle .dq-badge {
+  flex: 1 1 auto; min-width: 0; max-width: 150px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 计费周期句子比 key 引用长：允许折行，不要被 nowrap 裁掉后半句
+   （双类选择器压过 .dq-provider-key 的 nowrap，与书写顺序无关）。 */
+.dq-provider-key.dq-session-billing { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
 .dq-provider-name { font-weight: 600; font-size: 13px; flex: 1; }
 .dq-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .dq-badge--ok { background: rgba(61, 220, 132, 0.16); color: #3ddc84; }
@@ -177,6 +201,9 @@ export const PANEL_CSS = `
 }
 .dq-input:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
 .dq-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #777); text-align: center; padding: 2px 0 4px; }
+/* 头部放不下的「N/M 平台正常」挪到 footer，用中点分隔。 */
+.dq-foot-count { white-space: nowrap; }
+.dq-foot-count::before { content: ' · '; opacity: 0.7; }
 
 /* Custom-platform section extras (select + ref label). */
 .dq-custom-ref { flex: 1; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-tertiary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

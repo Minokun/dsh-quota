@@ -240,7 +240,7 @@ const deepseekBalance: FormatParser = (body) => {
   for (const info of infos) {
     const currency = str(info.currency) ?? 'CNY'
     const sym = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : `${currency} `
-    items.push({ label: `${currency} 总余额`, display: `${sym}${str(info.total_balance) ?? '?'}` })
+    items.push({ label: `${currency} 总余额`, display: `${sym}${str(info.total_balance) ?? '?'}`, remaining: num(info.total_balance) })
     // total = 充值 + 赠金：赠金为 0 时「充值」必然等于「总余额」，拆开只是
     // 噪音；只有赠金非零才显示构成明细。
     const granted = num(info.granted_balance) ?? 0
@@ -259,7 +259,7 @@ const openrouterCredits: FormatParser = (body) => {
   const usage = num(data?.total_usage)
   if (credits === undefined || usage === undefined) throw new Error('missing data.total_credits / data.total_usage')
   return [
-    { label: '余额', display: `$${(credits - usage).toFixed(2)}` },
+    { label: '余额', display: `$${(credits - usage).toFixed(2)}`, remaining: credits - usage },
     { label: '累计已用', display: `$${usage.toFixed(2)} / $${credits.toFixed(2)}` },
   ]
 }
@@ -268,7 +268,7 @@ const siliconflowBalance: FormatParser = (body) => {
   const data = (body as Record<string, unknown>).data as Record<string, unknown> | undefined
   const balance = num(data?.balance)
   if (balance === undefined) throw new Error('missing data.balance')
-  const items: QuotaItem[] = [{ label: '余额', display: `¥${balance}` }]
+  const items: QuotaItem[] = [{ label: '余额', display: `¥${balance}`, remaining: balance }]
   if (num(data?.chargeBalance) !== undefined) items.push({ label: '充值', display: `¥${num(data?.chargeBalance)}` })
   if (num(data?.totalUsage) !== undefined) items.push({ label: '累计用量', display: `¥${num(data?.totalUsage)}` })
   return items
@@ -278,14 +278,14 @@ const moonshotBalance: FormatParser = (body) => {
   const data = (body as Record<string, unknown>).data as Record<string, unknown> | undefined
   const balance = num(data?.total_balance)
   if (balance === undefined) throw new Error('missing data.total_balance')
-  return [{ label: '余额', display: `¥${balance}` }]
+  return [{ label: '余额', display: `¥${balance}`, remaining: balance }]
 }
 
 const stepfunAccounts: FormatParser = (body) => {
   const raw = body as Record<string, unknown>
   const balance = num(raw.balance)
   if (balance === undefined) throw new Error('missing balance')
-  const items: QuotaItem[] = [{ label: '余额', display: `¥${balance}` }]
+  const items: QuotaItem[] = [{ label: '余额', display: `¥${balance}`, remaining: balance }]
   if (num(raw.total_cash_balance) !== undefined) items.push({ label: '现金', display: `¥${num(raw.total_cash_balance)}` })
   if (num(raw.total_voucher_balance) !== undefined) items.push({ label: '赠金', display: `¥${num(raw.total_voucher_balance)}` })
   return items
@@ -295,7 +295,7 @@ const xaiCredits: FormatParser = (body) => {
   const total = ((body as Record<string, unknown>).total ?? {}) as Record<string, unknown>
   const cents = num(total.val)
   if (cents === undefined) throw new Error('missing total.val')
-  return [{ label: '余额', display: `$${(Math.abs(cents) / 100).toFixed(2)}` }]
+  return [{ label: '余额', display: `$${(Math.abs(cents) / 100).toFixed(2)}`, remaining: Math.abs(cents) / 100 }]
 }
 
 const minimaxRemains: FormatParser = (body) => {
@@ -345,7 +345,7 @@ const deepinfraBilling: FormatParser = (body) => {
   if (stripeBalance === undefined) throw new Error('missing stripe_balance')
   const items: QuotaItem[] = []
   // negative = 预付余额（转正显示）；positive = 欠费
-  if (stripeBalance < 0) items.push({ label: '预付余额', display: `$${(-stripeBalance).toFixed(2)}` })
+  if (stripeBalance < 0) items.push({ label: '预付余额', display: `$${(-stripeBalance).toFixed(2)}`, remaining: -stripeBalance })
   else if (stripeBalance > 0) items.push({ label: '待付欠费', display: `$${stripeBalance.toFixed(2)}` })
   else items.push({ label: '预付余额', display: '$0.00' })
   const limit = num(raw.spending_limit ?? raw.spend_limit)
@@ -361,7 +361,7 @@ const veniceBalance: FormatParser = (body) => {
   const items: QuotaItem[] = []
   const diem = num(data.diem ?? data.DIEM ?? (data.balances as Record<string, unknown> | undefined)?.diem)
   const usd = num(data.usd ?? data.USD ?? (data.balances as Record<string, unknown> | undefined)?.usd)
-  if (usd !== undefined) items.push({ label: 'USD 余额', display: `$${usd.toFixed(2)}` })
+  if (usd !== undefined) items.push({ label: 'USD 余额', display: `$${usd.toFixed(2)}`, remaining: usd })
   if (diem !== undefined) items.push({ label: 'DIEM 余额', display: String(diem) })
   if (items.length === 0) throw new Error('missing usd/diem balance')
   return items
@@ -378,7 +378,7 @@ const neuralwattQuota: FormatParser = (body) => {
     items.push({ label: '订阅 kWh', used, limit: included, remaining: included - used, percent: pct(used, included) })
   }
   const prepaid = num(data.prepaid_usd ?? data.credit_balance_usd ?? data.balance_usd)
-  if (prepaid !== undefined) items.push({ label: '预付余额', display: `$${prepaid.toFixed(2)}` })
+  if (prepaid !== undefined) items.push({ label: '预付余额', display: `$${prepaid.toFixed(2)}`, remaining: prepaid })
   const spent = num(data.spent_usd)
   const keyLimit = num(data.limit_usd)
   if (spent !== undefined && keyLimit !== undefined && keyLimit > 0) {

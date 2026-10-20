@@ -2,6 +2,8 @@
  * The quota pill + panel, mounted into the frame-wide `shell.overlay` slot:
  * a bottom-right "会员额度" pill that toggles a panel listing every platform's
  * plan quota (direct API-key platforms first, MCP fallback platforms after).
+ * The card of the platform the visible session's model runs on is pinned to
+ * the top of that list (see panel-order.ts); the rest keep the host order.
  *
  * API keys sync from DSH automatically — the panel only surfaces which
  * credential ref supplied each platform; manual entry stays available behind
@@ -12,11 +14,13 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: the `shell.overlay` slot declaration.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { platformForProvider, summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
+import { summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
+import { orderProviders, providerRowOf } from './panel-order.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
 import { formatEtaSpan } from './usage-alerts.ts'
 import { visibleSessionIdOf, sessionTokenUsageOf, type TokenUsageView } from './session-model.ts'
 import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
+import { billingLine } from './billing-line.ts'
 import { sparklinePoints } from './sparkline.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
@@ -117,12 +121,12 @@ function etaText(minutes: number, t: TFn): string {
   return t('eta.days', { n: (minutes / 1440).toFixed(1) })
 }
 
-/** 本会话卡片的四个桶行（label locale key + token 数）。 */
-function usageRowValues(u: TokenUsageView): Array<{ key: 'session.card.input' | 'session.card.cacheRead' | 'session.card.cacheWrite' | 'session.card.output'; value: number }> {
+/** 本会话卡片的桶行（label locale key + token 数）。缓存写恒为 0（DeepSeek
+ * 无此计费桶，dsh 投影恒为 0），不再单独成行——其费用已并入输入侧估算。 */
+function usageRowValues(u: TokenUsageView): Array<{ key: 'session.card.input' | 'session.card.cacheRead' | 'session.card.output'; value: number }> {
   return [
     { key: 'session.card.input', value: u.uncachedInputTokens },
     { key: 'session.card.cacheRead', value: u.cacheReadTokens },
-    { key: 'session.card.cacheWrite', value: u.cacheWriteTokens },
     { key: 'session.card.output', value: u.outputTokens },
   ]
 }
@@ -135,6 +139,13 @@ function loadMode(): FloaterMode {
   try {
     return window.localStorage.getItem(MODE_KEY) === 'ring' ? 'ring' : 'pill'
   } catch { return 'pill' }
+}
+
+/** localStorage key for the session card's expanded state (default collapsed). */
+const SESSION_OPEN_KEY = 'dsh-quota:session-open'
+
+function loadSessionOpen(): boolean {
+  try { return window.localStorage.getItem(SESSION_OPEN_KEY) === '1' } catch { return false }
 }
 
 /** The headline percent item of a provider card (5h/周 window preferred). */
@@ -172,12 +183,15 @@ export function QuotaPanel(props: QuotaPanelProps) {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
   // 先按 apiKeyEnv 精确对应（同平台多号也准），再退回名称模糊匹配。
-  const rowFor = (provider: string): PanelProvider | undefined => {
-    const ref = state.providerKeyRefs[provider]
-    const platformId = platformForProvider(provider)
-    return (ref ? state.providers.find((p) => p.keyRef === ref) : undefined)
-      ?? state.providers.find((p) => p.id === platformId || p.id.startsWith(`${platformId}#`))
-  }
+  const rowFor = (provider: string): PanelProvider | undefined =>
+    providerRowOf(state.providers, provider, state.providerKeyRefs)
+  // 卡片顺序：当前在用的模型所在平台排第一（紧跟第一行的本会话用量卡片），
+  // 其余平台保持 Host 下发的固定顺序；换模型时顺序实时跟着变。
+  const orderedProviders = orderProviders(
+    state.providers,
+    state.sessionModel?.provider ?? state.currentModel.provider,
+    state.providerKeyRefs,
+  )
   const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider), state.lang) : ''
   // 默认模型的摘要同样在本地按当前语言拼（host 下发的 summary 文案固定中文）。
   const defaultSummary = summarizeItems(rowFor(state.currentModel.provider), state.lang)
@@ -200,6 +214,10 @@ export function QuotaPanel(props: QuotaPanelProps) {
     : undefined
   // 成本文案（有价格才生成）。
   const costText = usageCost ? t('session.card.cost', { cost: `$${formatUsd(usageCost.usd)}` }) : ''
+  // 计费周期行：会话模型所在平台按自身计费形态（周/月/短窗口/余额）
+  // 给「本周消耗 / 预计耗尽」一句话（billing-line.ts 纯函数）。
+  const billingProvider = rowFor((state.sessionModel ?? state.currentModel).provider)
+  const billingText = showUsageCard ? billingLine(billingProvider, t) : ''
 
   // 红点 = 用量越阈值条目 + 查询失败平台 + 登录失效提醒；面板头部、悬浮球
   // tooltip 与对应平台卡片共用 alerts.ts 的同一份判定。
@@ -215,13 +233,18 @@ export function QuotaPanel(props: QuotaPanelProps) {
     try { window.localStorage.setItem(MODE_KEY, next) } catch { /* private mode */ }
   }
 
+  // ── 本会话卡片：收/展状态（默认收起，localStorage 记住手动展开）────────
+  const [sessionOpen, setSessionOpen] = useState(() => (typeof window === 'undefined' ? false : loadSessionOpen()))
+  const toggleSession = (): void => {
+    const next = !sessionOpen
+    setSessionOpen(next)
+    try { window.localStorage.setItem(SESSION_OPEN_KEY, next ? '1' : '0') } catch { /* private mode */ }
+  }
+
   // 悬浮环焦点平台：优先跟随当前会话模型对应的卡片；无对应时在 ok 且
   // 有百分比条目的平台间轮播（悬停暂停）。
   const ringCandidates = state.providers.filter((p) => p.status === 'ok' && headlineItem(p) !== undefined)
-  const sessionPlatformId = state.sessionModel
-    ? (state.providers.find((p) => p.keyRef === state.providerKeyRefs[state.sessionModel!.provider])?.id
-      ?? platformForProvider(state.sessionModel.provider))
-    : ''
+  const sessionPlatformId = state.sessionModel ? (rowFor(state.sessionModel.provider)?.id ?? '') : ''
   const sessionIdx = ringCandidates.findIndex((p) => p.id === sessionPlatformId || p.id.startsWith(`${sessionPlatformId}#`))
   const [carouselIdx, setCarouselIdx] = useState(0)
   const [ringHover, setRingHover] = useState(false)
@@ -424,7 +447,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
         <div className="dq-panel">
           <div className="dq-panel-head">
             <span className="dq-panel-title">{t('panel.title')}</span>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>{totalCount > 0 ? t('panel.normalCount', { ok: okCount, total: totalCount }) : ''}</span>
             {alerts > 0 && (
               <span className="dq-panel-alert" title={alertTexts.join('\n')}>{t('panel.alerts', { n: alerts })}</span>
             )}
@@ -442,27 +464,46 @@ export function QuotaPanel(props: QuotaPanelProps) {
             )}
             {showUsageCard && (
               <div className="dq-provider dq-provider--session">
-                <div className="dq-provider-head">
+                <button
+                  type="button"
+                  className="dq-provider-head dq-session-toggle"
+                  aria-expanded={sessionOpen}
+                  title={t('session.card.toggle')}
+                  onClick={toggleSession}
+                >
+                  <span className="dq-keys-caret">{sessionOpen ? '▾' : '▸'}</span>
                   <span className="dq-provider-name">{t('session.card.title')}</span>
                   {sessionModelLabel && <span className="dq-badge dq-badge--api">{sessionModelLabel}</span>}
-                </div>
-                <div className="dq-items">
-                  {usageRows.map((row) => (
-                    <div key={row.key} className="dq-item">
-                      <span className="dq-item-label">{t(row.key)}</span>
-                      <span className="dq-item-bar" style={{ background: 'transparent' }} />
-                      <span className="dq-item-value">{formatTokens(row.value)}</span>
+                  {!sessionOpen && usageCost && (
+                    <span className="dq-session-peek">{costText}</span>
+                  )}
+                </button>
+                {sessionOpen && (
+                  <>
+                    <div className="dq-items">
+                      {usageRows.map((row) => (
+                        <div key={row.key} className="dq-item">
+                          <span className="dq-item-label">{t(row.key)}</span>
+                          <span className="dq-item-bar" style={{ background: 'transparent' }} />
+                          <span className="dq-item-value">{formatTokens(row.value)}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                {usageCost && (
-                  <span className="dq-provider-key" title={costText}>
-                    {costText}
-                  </span>
+                    {usageCost && (
+                      <span className="dq-provider-key" title={costText}>
+                        {costText}
+                      </span>
+                    )}
+                    {billingText && (
+                      <span className="dq-provider-key dq-session-billing" title={t('session.card.billingTitle')}>
+                        {billingText}
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
             )}
-            {state.providers.map((p) => {
+            {orderedProviders.map((p) => {
               const cardAlerts = providerAlertLines(p, state, t)
               const cardAlertCount = providerAlertCount(p, state)
               return (
@@ -581,7 +622,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
                     <input
                       className="dq-input"
                       type="password"
-                      placeholder={configured ? t('keys.overridePlaceholder', { ref: keyInfo?.ref ?? '' }) : 'sk-...'}
+                      placeholder={configured ? t('keys.overridePlaceholder', { ref: keyInfo?.ref ?? '' }) : kp.id === 'volcark' ? t('keys.arkPlaceholder') : 'sk-...'}
                       value={state.drafts[kp.id] ?? ''}
                       onChange={(e) => { props.editKey(kp.id, e.currentTarget.value) }}
                     />
@@ -651,6 +692,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
             {state.refreshedAt
               ? t('panel.footer.refreshedAt', { time: new Date(state.refreshedAt).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US') })
               : t('panel.footer.never')}
+            {totalCount > 0 && (
+              <span className="dq-foot-count">{t('panel.normalCount', { ok: okCount, total: totalCount })}</span>
+            )}
           </div>
         </div>
       )}

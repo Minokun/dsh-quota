@@ -42,6 +42,8 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
                       display: { type: 'string' },
                       burnRatePerHour: { type: 'number' },
                       etaMinutes: { type: 'number' },
+                      weeklySpent: { type: 'number' },
+                      spendWindowMs: { type: 'number' },
                     },
                     additionalProperties: false,
                   },
@@ -54,7 +56,7 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
         additionalProperties: false,
       },
       render: (_args, value) => {
-        const v = value as { refreshedAt: string; providers: Array<{ label: string; status: string; message?: string; items: Array<{ label: string; percent?: number; remaining?: number; display?: string; burnRatePerHour?: number; etaMinutes?: number }> }> }
+        const v = value as { refreshedAt: string; providers: Array<{ label: string; status: string; message?: string; items: Array<{ label: string; percent?: number; remaining?: number; display?: string; burnRatePerHour?: number; etaMinutes?: number; weeklySpent?: number; spendWindowMs?: number }> }> }
         const etaText = (minutes: number): string => {
           if (minutes < 60) return `约 ${String(minutes)} 分钟后耗尽`
           if (minutes < 60 * 24) return `约 ${(minutes / 60).toFixed(1)} 小时后耗尽`
@@ -68,6 +70,10 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
             if (i.remaining !== undefined) parts.push(`剩 ${i.remaining}`)
             if (i.display !== undefined) parts.push(i.display)
             if (i.burnRatePerHour !== undefined) parts.push(`消耗 ${i.burnRatePerHour}/h`)
+            if (i.weeklySpent !== undefined) {
+              const days = i.spendWindowMs === undefined ? 7 : Math.max(1, Math.round(i.spendWindowMs / 86400000))
+              parts.push(days >= 7 ? `近 7 天≈${i.weeklySpent}` : `近 7 天≈${i.weeklySpent}（按 ${days} 天实测折算）`)
+            }
             if (i.etaMinutes !== undefined) parts.push(etaText(i.etaMinutes))
             return `  - ${parts.join(' | ')}`
           })

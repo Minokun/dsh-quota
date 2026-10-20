@@ -16,9 +16,11 @@ import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
-import { burnInsight, itemKey, recordSamples, type HistoryMap } from './insights.ts'
+import { burnInsight, itemKey, mergeHistory, recordSamples, spendInsight, type HistoryMap } from './insights.ts'
+import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-file.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 import { fetchSubscriptionRows } from './subscription.ts'
+import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
 import type { QuotaStateStore } from './state-store.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
@@ -32,6 +34,9 @@ const FETCH_RETRY_DELAY_MS = 2000
 /** 刷新失败后的自动补刷节奏：30s 起步、指数退避、上限 4 分钟。 */
 const FAILURE_RETRY_BASE_MS = 30000
 const FAILURE_RETRY_MAX_MS = 240000
+
+/** 样本落盘节流：刷新默认 5 分钟一轮，磁盘不必跟得那么勤。 */
+const HISTORY_SAVE_MIN_GAP_MS = 60 * 1000
 
 /** 网络抖动/限流/5xx 值得当场重试一次；401/403 等鉴权错误重试无意义。 */
 function isTransientFailure(message: string): boolean {
@@ -110,6 +115,9 @@ function platformForProvider(provider: string): string {
   if (p.includes('opencode')) return 'opencode-go'
   if (p.includes('openai')) return 'openai-admin'
   if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
+  // 火山方舟：供应商 id 就是 ark；别把 'ark' 写成 includes 匹配（会误伤
+  // 其它含 ark 的 id），只用精确 id + 厂商常见写法。
+  if (p === 'ark' || p.includes('volc') || p.includes('doubao')) return ARK_PLATFORM_ID
   return ''
 }
 
@@ -236,6 +244,10 @@ export class QuotaController implements QuotaControllerFace {
   /** 失败后自动补刷的定时器与退避序号。 */
   private retryTimer: ReturnType<typeof setTimeout> | undefined
   private retryAttempt = 0
+  /** 是否已把落盘样本合并进内存（只在启动后第一次刷新时读一次磁盘）。 */
+  private historyLoaded = false
+  /** 上次样本落盘时间（节流用）。 */
+  private lastHistorySaveAt = 0
 
   /**
    * 失败看门狗：本轮出现 error 行（或整轮抛错）时安排一次提前补刷，
@@ -322,6 +334,28 @@ export class QuotaController implements QuotaControllerFace {
   /** Patch the panel state (the host store decides persistence). */
   private async patch(patch: Partial<Config>): Promise<void> {
     await this.store.update(patch)
+  }
+
+  /**
+   * 把磁盘上的样本缓存合并进内存（启动后第一次刷新执行一次）。新版 dsh 的
+   * 运行时快照只在内存里，不读回这份缓存的话，每次重启「近 7 天实测」都得
+   * 从头再攒，永远给不出日均。
+   */
+  private async ensureHistoryLoaded(): Promise<void> {
+    if (this.historyLoaded) return
+    this.historyLoaded = true
+    const persisted = await loadHistoryFile(historyFilePath())
+    if (Object.keys(persisted).length === 0) return
+    const merged = mergeHistory((this.state().history ?? {}) as HistoryMap, persisted)
+    await this.patch({ history: merged })
+  }
+
+  /** 落盘样本缓存（节流；失败静默——缓存丢了只是重新积累，面板照常工作）。 */
+  private persistHistory(history: HistoryMap): void {
+    const now = Date.now()
+    if (now - this.lastHistorySaveAt < HISTORY_SAVE_MIN_GAP_MS) return
+    this.lastHistorySaveAt = now
+    void saveHistoryFile(historyFilePath(), history).catch(() => undefined)
   }
 
   /** Custom HTTP platforms as direct adapters (built-in catalog ids win). */
@@ -471,6 +505,14 @@ export class QuotaController implements QuotaControllerFace {
       // 不会把这两个限流端点打爆。
       providers.push(...await fetchSubscriptionRows())
 
+      // 火山方舟（AK/SK 控制面 OpenAPI，见 ark.ts）：与订阅行一样按本地
+      // 凭据自动发现——有 AK/SK 才查；没有就整行隐藏，交给下面 DSH 模型
+      // 供应商的 /models 探活兜底（同一平台 id，有额度行时探活自动跳过）。
+      // 模型供应商门槛照常生效：DSH 没配 ark 供应商就不查。
+      if (gate === undefined || gate.platforms.has(ARK_PLATFORM_ID)) {
+        providers.push(...await fetchArkRows({ credentials }))
+      }
+
       // DSH 模型供应商：id → apiKeyEnv（供 pill 精确对应平台卡片）。
       const llmProviders = this.getProviders()
       const providerKeyRefs: Record<string, string> = {}
@@ -511,8 +553,13 @@ export class QuotaController implements QuotaControllerFace {
             await sleep(FETCH_RETRY_DELAY_MS)
             return probeOnce()
           })
+          // 火山方舟的「在线」正是这条兜底：ARK_API_KEY 只能调模型，套餐
+          // 额度在控制面 OpenAPI（需 AK/SK），把原因直接写在卡片上。
+          const probeNote = platformForProvider(lp.id) === ARK_PLATFORM_ID
+            ? '模型可用，但查不到额度：火山方舟套餐用量需火山引擎 AK/SK 签名的 OpenAPI（ARK_API_KEY 只能探活）'
+            : '该平台无 API-key 额度接口，仅探测服务可用性'
           providers.push(resp.ok
-            ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, message: '该平台无 API-key 额度接口，仅探测服务可用性', items: [{ label: '模型服务', display: '在线' }] }
+            ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, message: probeNote, items: [{ label: '模型服务', display: '在线' }] }
             : { id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败 HTTP ${resp.status}`, items: [] })
         } catch (error) {
           providers.push({ id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败：${error instanceof Error ? error.message : String(error)}`, items: [] })
@@ -520,14 +567,28 @@ export class QuotaController implements QuotaControllerFace {
       }
 
       // 时序采样 → 消耗速率 + 预估剩余时长：先把本轮数值并入历史（采样
-      // 间隔 ≥10 分钟），再在当前单调段上算速率，窗口重置（数值骤降）会
-      // 自动截断历史段，避免跨重置算出负速率。
+      // 间隔 ≥10 分钟，重置级跳变立即记），再按条目形态分流：
+      // - 余额型（只有 remaining，没有 percent/used）：日历日均口径
+      //   （近 7 天实测降幅，闲置时间也算进分母）→ 近 7 天消耗 + 余额 ETA；
+      // - 窗口/用量型（percent 或 used）：当前窗口段平均速率 → 窗口 ETA。
+      await this.ensureHistoryLoaded()
       const now = Date.now()
       const history = recordSamples((this.state().history ?? {}) as HistoryMap, providers, now)
       for (const p of providers) {
         if (p.status !== 'ok') continue
         for (const item of p.items) {
-          const insight = burnInsight(history[itemKey(p.id, item.label)] ?? [], item, now)
+          const series = history[itemKey(p.id, item.label)] ?? []
+          if (item.percent === undefined && item.used === undefined && item.remaining !== undefined) {
+            const spend = spendInsight(series, item, now)
+            if (spend) {
+              item.burnRatePerHour = spend.ratePerHour
+              item.etaMinutes = spend.etaMinutes
+              item.weeklySpent = spend.weeklySpent
+              item.spendWindowMs = spend.spanMs
+            }
+            continue
+          }
+          const insight = burnInsight(series, item, now)
           if (insight) {
             item.burnRatePerHour = insight.ratePerHour
             item.etaMinutes = insight.etaMinutes
@@ -537,6 +598,7 @@ export class QuotaController implements QuotaControllerFace {
 
       const state: Config = { ...this.state(), refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history }
       await this.patch({ refreshedAt: startedAt, refreshing: false, providers, currentModel, providerKeyRefs, history })
+      this.persistHistory(history)
       // 有失败行就安排提前补刷（退避到 4 分钟封顶），全绿则清零。
       this.scheduleFailureRetry(providers.some((p) => p.status === 'error'))
       return state
@@ -558,11 +620,26 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Platforms the panel's key manager covers: every direct (API-key) row. */
   keyPlatforms(): Array<{ id: string; label: string }> {
-    return this.allDirectAdapters().map((a) => ({ id: a.id, label: a.label }))
+    return [
+      ...this.allDirectAdapters().map((a) => ({ id: a.id, label: a.label })),
+      // 火山方舟要一对 AK/SK（面板输入格式 AK:SK），不是单个 API key。
+      { id: ARK_PLATFORM_ID, label: `${ARK_LABEL} (AK/SK)` },
+    ]
   }
 
   /** Store one platform key into the credentials domain. */
   async saveKey(platform: string, key: string): Promise<void> {
+    if (platform === ARK_PLATFORM_ID) {
+      const pair = parseArkKeyPair(key)
+      if (!pair) throw new Error('火山方舟要一对 AK/SK：按「AK:SK」填写（或分两行粘贴）')
+      const invalid = arkKeyPairError(pair)
+      if (invalid) throw new Error(invalid)
+      const credentials = this.getCredentials()
+      if (!credentials) throw new Error('凭证服务不可用')
+      await credentials.set(credentialRef(ARK_AK_REFS[0]), pair.ak)
+      await credentials.set(credentialRef(ARK_SK_REFS[0]), pair.sk)
+      return
+    }
     const ref = this.writeRefFor(platform)
     if (!ref) throw new Error(`未知平台：${platform}`)
     const trimmed = key.trim()
@@ -574,6 +651,13 @@ export class QuotaController implements QuotaControllerFace {
 
   /** Remove one platform key from the credentials domain. */
   async removeKey(platform: string): Promise<void> {
+    if (platform === ARK_PLATFORM_ID) {
+      const credentials = this.getCredentials()
+      if (!credentials) return
+      await credentials.unset(credentialRef(ARK_AK_REFS[0]))
+      await credentials.unset(credentialRef(ARK_SK_REFS[0]))
+      return
+    }
     const ref = this.writeRefFor(platform)
     if (!ref) throw new Error(`未知平台：${platform}`)
     const credentials = this.getCredentials()
@@ -659,6 +743,16 @@ export class QuotaController implements QuotaControllerFace {
    */
   async probe(platform: string): Promise<{ ok: boolean; ms: number; message?: string }> {
     const started = Date.now()
+    if (platform === ARK_PLATFORM_ID) {
+      const pair = await resolveArkKeyPair(this.getCredentials())
+      if (!pair) return { ok: false, ms: 0, message: '未配置 AK/SK（ARK_API_KEY 只能探活）' }
+      try {
+        await fetchArkUsage(pair, { signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) })
+        return { ok: true, ms: Date.now() - started }
+      } catch (error) {
+        return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
     const direct = this.allDirectAdapters().find((a) => a.id === platform)
     if (direct) {
       const key = await resolveKey(this.getCredentials(), direct.keyRefs, direct.envKeys)
@@ -694,6 +788,11 @@ export class QuotaController implements QuotaControllerFace {
         ? { configured: true, source: key.source, ref: key.ref, manual: key.ref === privateRef && key.source !== 'env' }
         : { configured: false }
     }
+    // 火山方舟：按 AK + SK 成对判断，ref 显示成「AK 引用 + SK 引用」。
+    const ark = await resolveArkKeyPair(credentials)
+    out[ARK_PLATFORM_ID] = ark
+      ? { configured: true, source: ark.source, ref: `${ark.akRef} + ${ark.skRef}`, manual: ark.source !== 'env' }
+      : { configured: false }
     return out
   }
 }
