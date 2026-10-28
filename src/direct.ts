@@ -14,7 +14,8 @@
  * z.ai quota API included (from the z.ai frontend source): TOKENS_LIMIT
  * unit=3 is the N-hour session window, unit=6 is the weekly window, and
  * TIME_LIMIT is the monthly search/MCP-tool lane (its usageDetails are
- * search-prime / web-reader / zread).
+ * search-prime / web-reader / zread). The Coding Plan meters credits, so the
+ * same windows may arrive as CREDIT_LIMIT instead.
  * @module dsh-quota/direct
  */
 
@@ -137,6 +138,10 @@ export type FormatParser = (body: unknown) => QuotaItem[]
  * search-prime / web-reader / zread). Do NOT infer the window from
  * unit*number ordering — unit=6/number=1 (week) sorts below unit=3/number=5
  * (5h) and the two rows end up swapped.
+ *
+ * Upstream also serves the same windows as CREDIT_LIMIT — the Coding Plan
+ * meters credits instead of tokens — with the same usage/currentValue/
+ * remaining fields, so both types map to the same rows.
  */
 const zaiCoding: FormatParser = (body) => {
   const raw = body as Record<string, unknown>
@@ -144,14 +149,22 @@ const zaiCoding: FormatParser = (body) => {
   const data = (raw.data ?? raw) as Record<string, unknown>
   const limits = Array.isArray(data.limits) ? data.limits as Array<Record<string, unknown>> : []
   if (limits.length === 0) throw new Error('data.limits is empty')
-  const tokens = limits.filter((l) => str(l.type) === 'TOKENS_LIMIT')
+  const tokens = limits.filter((l) => {
+    const type = str(l.type)
+    return type === 'TOKENS_LIMIT' || type === 'CREDIT_LIMIT'
+  })
   const time = limits.find((l) => str(l.type) === 'TIME_LIMIT')
   const items: QuotaItem[] = []
   const tokenItem = (l: Record<string, unknown>, label: string): void => {
     const percentage = num(l.percentage)
+    const used = num(l.currentValue)
+    const limit = num(l.usage)
     items.push({
       label,
-      percent: percentage,
+      used,
+      limit,
+      remaining: num(l.remaining) ?? (used !== undefined && limit !== undefined ? limit - used : undefined),
+      percent: percentage ?? pct(used, limit),
       display: `已用 ${percentage ?? '?'}%`,
       resetAt: isoFromMs(l.nextResetTime),
     })
@@ -179,7 +192,7 @@ const zaiCoding: FormatParser = (body) => {
       resetAt: isoFromMs(time.nextResetTime),
     })
   }
-  if (items.length === 0) throw new Error('no TOKENS_LIMIT / TIME_LIMIT entries')
+  if (items.length === 0) throw new Error('no TOKENS_LIMIT / CREDIT_LIMIT / TIME_LIMIT entries')
   return items
 }
 
