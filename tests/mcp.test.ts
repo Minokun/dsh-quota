@@ -30,3 +30,49 @@ test('supawriter falls back to the dashboard pair when the MCP reports no quota'
 test('supawriter reports a logged-out MCP as such', () => {
   assert.deepEqual(parse({ loggedIn: false }), [{ label: '登录态', display: '未登录' }])
 })
+
+// ── BigModel ────────────────────────────────────────────────────────────────
+
+const bigmodel = MCP_ADAPTERS.find((adapter) => adapter.id === 'bigmodel')!
+
+/** Feed results in `adapter.calls` order, like `runMcpAdapter` does. */
+function parseBigmodel(account: unknown, subscriptions: unknown): ReturnType<typeof bigmodel.parse> {
+  const valueOf: Record<string, unknown> = {
+    mcp__bigmodel__bm_account_set: account,
+    mcp__bigmodel__bm_subscription_list: subscriptions,
+  }
+  return bigmodel.parse(bigmodel.calls.map((call) => ({ name: call.name, value: valueOf[call.name] })))
+}
+
+test('bigmodel shows the coding subscription next to the account balance', () => {
+  const items = parseBigmodel(
+    { basicCustomerInfo: { customerName: 'mpvseed9', balance: 0 } },
+    [
+      { productName: 'GLM Coding Pro', status: 'VALID', valid: '2027-03-28 10:00:00-2028-03-28 10:00:00' },
+      { productName: 'GLM Coding Pro', status: 'VALID', valid: '2027-03-28 10:00:00-2027-04-28 10:00:00' },
+    ],
+  )
+  assert.deepEqual(items, [
+    { label: 'GLM Coding Pro', display: '生效中 · 至 2028-03-28' },
+    { label: '账户余额', display: '¥0' },
+    { label: '账户', display: 'mpvseed9' },
+  ])
+})
+
+test('bigmodel keeps the balance row when the subscription call returns nothing', () => {
+  const items = parseBigmodel({ basicCustomerInfo: { customerName: 'mpvseed9', balance: 12.5 } }, [])
+  assert.deepEqual(items, [
+    { label: '账户余额', display: '¥12.5' },
+    { label: '账户', display: 'mpvseed9' },
+  ])
+})
+
+test('bigmodel marks an ended subscription instead of pretending it is active', () => {
+  const items = bigmodel.parse([
+    {
+      name: 'mcp__bigmodel__bm_subscription_list',
+      value: [{ productName: 'GLM Coding Pro', status: 'EXPIRED', valid: '2025-01-01 10:00:00-2025-02-01 10:00:00' }],
+    },
+  ])
+  assert.deepEqual(items, [{ label: 'GLM Coding Pro', display: '已结束 · 原至 2025-02-01' }])
+})

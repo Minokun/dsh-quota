@@ -141,13 +141,56 @@ function moneyItem(obj: unknown, label: string, keys: string[]): QuotaItem | nul
 
 // ── BigModel (智谱开放平台账户) ───────────────────────────────────────────────
 
+/**
+ * Coding-plan entitlement for the BigModel account row: `valid` is the console's
+ * `"<start> - <end>"` span string, so keep the latest end date per product.
+ * Returns nothing when the account holds no subscription.
+ */
+function bigmodelSubscriptions(value: unknown): QuotaItem[] {
+  const seen = new Map<string, { end?: string; status?: string }>()
+  for (const row of walk(value, (v) => {
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+    const o = v as Record<string, unknown>
+    return typeof o.productName === 'string' && o.valid !== undefined
+  }) as Array<Record<string, unknown>>) {
+    const name = str(row.productName) ?? '订阅'
+    const span = str(row.valid) ?? ''
+    // `valid` looks like "2027-03-28 10:00:00-2028-03-28 10:00:00": the last
+    // date in the span is the end of the paid period.
+    const dates = span.match(/\d{4}-\d{2}-\d{2}/g) ?? []
+    const end = dates.length >= 2 ? dates[dates.length - 1] : undefined
+    const prev = seen.get(name)
+    if (!prev || (end !== undefined && (prev.end === undefined || end > prev.end))) {
+      seen.set(name, { end, status: str(row.status) })
+    }
+  }
+  const items: QuotaItem[] = []
+  for (const [name, { end, status }] of seen) {
+    const active = status === undefined || /VALID|生效/i.test(status)
+    items.push({
+      label: name,
+      display: active ? (end ? `生效中 · 至 ${end}` : '生效中') : `已结束${end ? ` · 原至 ${end}` : ''}`,
+    })
+  }
+  return items
+}
+
 const bigmodel: McpAdapter = {
   id: 'bigmodel',
   label: '智谱 BigModel',
-  calls: [{ name: 'mcp__bigmodel__bm_account_set', args: {} }],
+  calls: [
+    // Subscription entitlement first: it is the informative row, the balance
+    // alone reads as "nothing changed" when the account happens to hold ¥0.
+    { name: 'mcp__bigmodel__bm_subscription_list', args: { pageSize: 9999, pageNum: 1 } },
+    { name: 'mcp__bigmodel__bm_account_set', args: {} },
+  ],
   parse(results) {
     const items: QuotaItem[] = []
-    for (const { value } of results) {
+    for (const { name, value } of results) {
+      if (name.endsWith('bm_subscription_list')) {
+        items.push(...bigmodelSubscriptions(value))
+        continue
+      }
       const info = walk(value, (v) => {
         if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
         const o = v as Record<string, unknown>
@@ -155,8 +198,8 @@ const bigmodel: McpAdapter = {
       })[0] as Record<string, unknown> | undefined
       const balance = num(info?.balance)
       if (balance !== undefined) items.push({ label: '账户余额', display: `¥${balance}` })
-      const name = str(info?.customerName)
-      if (name) items.push({ label: '账户', display: name })
+      const customer = str(info?.customerName)
+      if (customer) items.push({ label: '账户', display: customer })
     }
     if (items.length === 0) items.push({ label: '原始返回', display: JSON.stringify(results).slice(0, 200) })
     return items

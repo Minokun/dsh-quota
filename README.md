@@ -47,6 +47,8 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 **MCP 平台**（纯可选扩展，通过另行注册的 `mcp__*` 工具取数；本仓库不包含这些 MCP 服务器）：智谱 BigModel、通义千问（百炼）、超算互联网、TokenRouter、SupaWriter。没注册时对应平台自动隐藏。
 
+> **智谱 BigModel 的登录态会自己续上**：该 MCP 服务器（`bigmodel-mcp`）能从本机 Chrome / Edge / Brave 的 `bigmodel_token_production` cookie 解出 JWT。面板刷新时若上游回「登录状态已过期」（code 401），它会自动重取浏览器里的新 token、写回会话文件并**重试一次**，所以你在浏览器里重新登录 open.bigmodel.cn 后，点一下刷新（或等自动轮询）就恢复，不用重启 dsh、也不用手动粘贴 cookie。
+
 **平台来源以 DSH 系统配置为准**：MCP 平台行只在 **DSH composition（profile 的 `cordis.yml` / `cordis.patch.yml`）声明了对应的 `@deepseek-ai/dsh-mcp-client` 条目**时才创建——Host 半边通过 cordis loader 服务读取真实的 entry 树，而不是看项目里的 `.mcp.json`、也不是"恰好存在同名工具"；composition 里删掉条目（并重启 dsh）后，对应平台立即从面板消失。loader 服务不可用的旧版本上自动退回"工具注册表探测"。
 
 **自定义平台**：有余额 API 的平台（聚合站 / one-api / new-api…）在面板底部「自定义平台」直接添加，或在 config 里声明 `httpPlatforms` / `mcpPlatforms` —— 详见 **[docs/extending.md](docs/extending.md)**（含"如何把网页 Cookie 平台做成 MCP 接入"的完整指南）。
