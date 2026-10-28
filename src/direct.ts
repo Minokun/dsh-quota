@@ -14,7 +14,8 @@
  * z.ai quota API included (from the z.ai frontend source): TOKENS_LIMIT
  * unit=3 is the N-hour session window, unit=6 is the weekly window, and
  * TIME_LIMIT is the monthly search/MCP-tool lane (its usageDetails are
- * search-prime / web-reader / zread).
+ * search-prime / web-reader / zread). The Coding Plan meters credits, so the
+ * same windows may arrive as CREDIT_LIMIT instead.
  * @module dsh-quota/direct
  */
 
@@ -137,6 +138,10 @@ export type FormatParser = (body: unknown) => QuotaItem[]
  * search-prime / web-reader / zread). Do NOT infer the window from
  * unit*number ordering — unit=6/number=1 (week) sorts below unit=3/number=5
  * (5h) and the two rows end up swapped.
+ *
+ * Upstream also serves the same windows as CREDIT_LIMIT — the Coding Plan
+ * meters credits instead of tokens — with the same usage/currentValue/
+ * remaining fields, so both types map to the same rows.
  */
 const zaiCoding: FormatParser = (body) => {
   const raw = body as Record<string, unknown>
@@ -144,14 +149,22 @@ const zaiCoding: FormatParser = (body) => {
   const data = (raw.data ?? raw) as Record<string, unknown>
   const limits = Array.isArray(data.limits) ? data.limits as Array<Record<string, unknown>> : []
   if (limits.length === 0) throw new Error('data.limits is empty')
-  const tokens = limits.filter((l) => str(l.type) === 'TOKENS_LIMIT')
+  const tokens = limits.filter((l) => {
+    const type = str(l.type)
+    return type === 'TOKENS_LIMIT' || type === 'CREDIT_LIMIT'
+  })
   const time = limits.find((l) => str(l.type) === 'TIME_LIMIT')
   const items: QuotaItem[] = []
   const tokenItem = (l: Record<string, unknown>, label: string): void => {
     const percentage = num(l.percentage)
+    const used = num(l.currentValue)
+    const limit = num(l.usage)
     items.push({
       label,
-      percent: percentage,
+      used,
+      limit,
+      remaining: num(l.remaining) ?? (used !== undefined && limit !== undefined ? limit - used : undefined),
+      percent: percentage ?? pct(used, limit),
       display: `已用 ${percentage ?? '?'}%`,
       resetAt: isoFromMs(l.nextResetTime),
     })
@@ -179,7 +192,7 @@ const zaiCoding: FormatParser = (body) => {
       resetAt: isoFromMs(time.nextResetTime),
     })
   }
-  if (items.length === 0) throw new Error('no TOKENS_LIMIT / TIME_LIMIT entries')
+  if (items.length === 0) throw new Error('no TOKENS_LIMIT / CREDIT_LIMIT / TIME_LIMIT entries')
   return items
 }
 
@@ -298,6 +311,14 @@ const xaiCredits: FormatParser = (body) => {
   return [{ label: '余额', display: `$${(Math.abs(cents) / 100).toFixed(2)}`, remaining: Math.abs(cents) / 100 }]
 }
 
+/**
+ * MiniMax `token_plan/remains`: one `model_remains` entry per model, each
+ * carrying a 5-hour window (`current_interval_*`) AND a weekly window
+ * (`current_weekly_*`). Both windows report the REMAINING percentage
+ * (`*_remaining_percent`); the count fields (`*_total_count` /
+ * `*_usage_count`) are 0 on current builds, so the percentage is the only
+ * usable source there. `*_end_time` is the window reset timestamp.
+ */
 const minimaxRemains: FormatParser = (body) => {
   const raw = body as Record<string, unknown>
   const status = num((raw.base_resp as Record<string, unknown> | undefined)?.status_code)
@@ -309,22 +330,40 @@ const minimaxRemains: FormatParser = (body) => {
     if (n !== undefined) return new Date(n > 1e12 ? n : n * 1000).toISOString()
     return str(v)
   }
-  for (const m of remains) {
-    const total = num(m.current_interval_total_count)
-    const resetAt = toIso(m.end_time ?? m.remains_time)
-    const pctRemaining = num(m.current_interval_remaining_percent)
+  /** First present numeric field, skipping null/undefined like `??` does. */
+  const firstNum = (m: Record<string, unknown>, keys: string[]): number | undefined => {
+    for (const k of keys) {
+      const v = m[k]
+      if (v === null || v === undefined) continue
+      const n = num(v)
+      if (n !== undefined) return n
+    }
+    return undefined
+  }
+  const windowItem = (m: Record<string, unknown>, spec: { label: string; percent: string; total: string; remaining: string[]; reset: string[] }): QuotaItem | undefined => {
+    const resetAt = toIso(spec.reset.map((k) => m[k]).find((v) => v !== null && v !== undefined))
+    const rawPct = m[spec.percent]
+    const pctRemaining = rawPct === null || rawPct === undefined ? undefined : num(rawPct)
     if (pctRemaining !== undefined) {
       const usedPct = Math.min(100, Math.max(0, 100 - pctRemaining))
-      return [{ label: '5h 窗口', percent: usedPct, display: `已用 ${Math.round(usedPct)}%`, resetAt }]
+      return { label: spec.label, percent: usedPct, display: `已用 ${Math.round(usedPct)}%`, resetAt }
     }
-    // Some builds report remaining via current_interval_usage_count (upstream quirk).
-    const remaining = num(m.current_interval_remaining_count ?? m.current_interval_remains_count ?? m.current_interval_usage_count)
+    // Some builds report remaining via *_usage_count (upstream quirk).
+    const total = num(m[spec.total])
+    const remaining = firstNum(m, spec.remaining)
     if (total !== undefined && total > 0 && remaining !== undefined) {
       const used = total - remaining
-      return [{ label: '5h 窗口', used, limit: total, remaining, percent: pct(used, total), resetAt }]
+      return { label: spec.label, used, limit: total, remaining, percent: pct(used, total), resetAt }
     }
+    return undefined
   }
-  throw new Error('no usable current_interval fields in model_remains')
+  const interval = { label: '5h 窗口', percent: 'current_interval_remaining_percent', total: 'current_interval_total_count', remaining: ['current_interval_remaining_count', 'current_interval_remains_count', 'current_interval_usage_count'], reset: ['end_time', 'remains_time'] }
+  const weekly = { label: '本周窗口', percent: 'current_weekly_remaining_percent', total: 'current_weekly_total_count', remaining: ['current_weekly_remaining_count', 'current_weekly_remains_count', 'current_weekly_usage_count'], reset: ['weekly_end_time', 'weekly_remains_time'] }
+  for (const m of remains) {
+    const items = [windowItem(m, interval), windowItem(m, weekly)].filter((x): x is QuotaItem => x !== undefined)
+    if (items.length > 0) return items
+  }
+  throw new Error('no usable current_interval / current_weekly fields in model_remains')
 }
 
 const opencodeUsage: FormatParser = (body) => {
