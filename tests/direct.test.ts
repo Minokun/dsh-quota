@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { customHttpFetch } from '../src/direct.ts'
+import { customHttpFetch, DIRECT_ADAPTERS } from '../src/direct.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -81,4 +81,47 @@ test('newapi-account rejects a missing user id before sending a request', async 
   const fetchQuota = customHttpFetch({ id: 'account', label: 'Account', endpoint: 'https://newapi.example.com', keyRef: 'NEWAPI_ACCESS_TOKEN', format: 'newapi-account' })
   await assert.rejects(fetchQuota('system-access-token'), /userId must be a positive integer/)
   assert.equal(called, false)
+})
+
+const zhipu = DIRECT_ADAPTERS.find((a) => a.id === 'zhipu')!
+
+test('zhipu adapter reads CREDIT_LIMIT windows (the Coding Plan meters credits, not tokens)', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    code: 200,
+    success: true,
+    data: {
+      limits: [
+        { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 12000, currentValue: 9132, remaining: 2867, percentage: 76, nextResetTime: 1793184944153 },
+        { type: 'CREDIT_LIMIT', unit: 6, number: 1, usage: 60000, currentValue: 60017, remaining: 0, percentage: 100, nextResetTime: 1793603577964 },
+      ],
+      level: 'pro',
+    },
+  })) as typeof fetch
+
+  const snapshot = await zhipu.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.label, '智谱 Coding Plan · pro')
+  assert.deepEqual(snapshot.items, [
+    { label: '5 小时窗口', used: 9132, limit: 12000, remaining: 2867, percent: 76, display: '已用 76%', resetAt: '2026-10-28T10:55:44.153Z' },
+    { label: '本周窗口', used: 60017, limit: 60000, remaining: 0, percent: 100, display: '已用 100%', resetAt: '2026-11-02T07:12:57.964Z' },
+  ])
+})
+
+test('zhipu adapter still reads TOKENS_LIMIT windows', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    code: 200,
+    data: {
+      limits: [
+        { type: 'TOKENS_LIMIT', unit: 3, number: 5, usage: 12000, currentValue: 9132, remaining: 2867, percentage: 76, nextResetTime: 1793184944153 },
+      ],
+    },
+  })) as typeof fetch
+
+  const snapshot = await zhipu.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.items[0]?.label, '5 小时窗口')
+  assert.equal(snapshot.items[0]?.remaining, 2867)
+  assert.equal(snapshot.items[0]?.percent, 76)
 })
