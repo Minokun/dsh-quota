@@ -499,8 +499,94 @@ function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) 
   }
 }
 
+// ── 智谱：API key 能查的「账户余额」 ────────────────────────────────────────
+//
+// 智谱把控制台接口和自己的开放 API 混在同一个 /api/biz/* 命名空间下，但权限
+// 不一样（2026-10 实测，`ZAI_CODING_CN_API_KEY` 标准 API key）：
+//   - GET /api/biz/account/query-customer-account-report  → 200，余额/充值/赠送/
+//     累计消费/冻结；Bearer key 即可
+//   - GET /api/biz/customer/accountSet、/api/biz/customer/getCustomerInfo → 403
+//     `APIKey not allow access`（控制台 JWT 专用，所以 MCP 那行才要登录态）
+// 也就是说「余额」完全不需要浏览器登录，一条 GET 就行。
+
+const ZHIPU_ACCOUNT_REPORT_URL = 'https://open.bigmodel.cn/api/biz/account/query-customer-account-report'
+
+/** CNY 金额：两位小数、去掉多余的 0（0 → ¥0、214.908478 → ¥214.91）。 */
+function cny(v: number): string {
+  const rounded = Math.round(v * 100) / 100
+  return `¥${rounded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+}
+
+/**
+ * 把 account-report 响应整理成面板行：可用余额（退回 balance）+ 累计消费
+ * （+ 今日消费，仅当上游给了非零值）。上游余额为 0 时也照实显示 ¥0 ——
+ * 「没充值」是有效信息，不该被藏起来。
+ * @param body - `{code, msg, data:{balance, availableBalance, totalSpendAmount, …}}`
+ *   或已经解开外壳的 data 本体。
+ * @returns 面板条目；字段都对不上时返回空数组。
+ */
+export function zhipuAccountItems(body: unknown): QuotaItem[] {
+  const raw = body as Record<string, unknown> | null | undefined
+  if (raw === null || raw === undefined || typeof raw !== 'object') return []
+  const data = (raw.data !== null && typeof raw.data === 'object' ? raw.data : raw) as Record<string, unknown>
+  const items: QuotaItem[] = []
+  const balance = num(data.availableBalance) ?? num(data.balance)
+  if (balance !== undefined) items.push({ label: '账户余额', display: cny(balance) })
+  const spent = num(data.totalSpendAmount)
+  if (spent !== undefined) items.push({ label: '累计消费', display: cny(spent) })
+  const today = num(data.todaySpendAmount)
+  if (today !== undefined && today > 0) items.push({ label: '今日消费', display: cny(today) })
+  return items
+}
+
+/** 智谱账户余额行（读取失败时由 {@link withExtraItems} 静默跳过）。 */
+async function zhipuAccountRows(key: string, signal?: AbortSignal): Promise<QuotaItem[]> {
+  const body = await getJson(ZHIPU_ACCOUNT_REPORT_URL, { Authorization: `Bearer ${key}`, accept: 'application/json, text/plain, */*' }, signal)
+  return zhipuAccountItems(body)
+}
+
+/**
+ * 给适配器挂一组「可选附加行」：主查询（配额窗口）先跑，附加查询（余额等）
+ * 失败只是少几行，绝不会把整张卡变成 error。
+ * @param base - 原适配器（自带 fetch）。
+ * @param extra - 追加条目的查询；抛错即忽略。
+ * @returns 合并后的适配器。
+ */
+export function withExtraItems(base: DirectAdapter, extra: (key: string, signal?: AbortSignal) => Promise<QuotaItem[]>): DirectAdapter {
+  return {
+    ...base,
+    async fetch(key, signal) {
+      const snapshot = await base.fetch(key, signal)
+      try {
+        snapshot.items = [...snapshot.items, ...(await extra(key, signal))]
+      } catch {
+        /* 附加信息是锦上添花：403 / 超时 / 形状变化都不影响主行 */
+      }
+      return snapshot
+    },
+  }
+}
+
+/** Origin of a catalog endpoint, or `undefined` when it is not a parseable URL. */
+function endpointOrigin(endpoint: string): string | undefined {
+  try {
+    return new URL(endpoint).origin
+  } catch {
+    return undefined
+  }
+}
+
 function entry(e: CatalogEntry): DirectAdapter {
-  return { id: e.id, label: e.label, keyRefs: e.keyRefs, envKeys: e.keyRefs, fetch: catalogFetch(e) }
+  const origin = endpointOrigin(e.endpoint)
+  return {
+    id: e.id,
+    label: e.label,
+    keyRefs: e.keyRefs,
+    envKeys: e.keyRefs,
+    ...(origin === undefined ? {} : { origins: [origin] }),
+    ...(e.adminOnly === true ? { extraRefsFromProviders: false } : {}),
+    fetch: catalogFetch(e),
+  }
 }
 
 const zaiPlanOf = (body: unknown): string | undefined => {
@@ -523,7 +609,11 @@ const kimiPlanOf = (body: unknown): string | undefined => {
 export const DIRECT_ADAPTERS: DirectAdapter[] = [
   entry({ id: 'kimi', label: 'Kimi Code', keyRefs: ['KIMI_CODING_API_KEY', 'KIMI_API_KEY'], endpoint: 'https://api.kimi.com/coding/v1/usages', format: 'kimi-coding', planOf: kimiPlanOf }),
   entry({ id: 'deepseek', label: 'DeepSeek', keyRefs: ['DEEPSEEK_API_KEY'], endpoint: 'https://api.deepseek.com/user/balance', format: 'deepseek-balance' }),
-  entry({ id: 'zhipu', label: '智谱 Coding Plan', keyRefs: ['ZAI_CODING_CN_API_KEY', 'ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'], endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', format: 'zai-coding', planOf: zaiPlanOf }),
+  // 配额窗口（Coding Plan）+ 账户余额/累计消费（标准 API key 同样可查）。
+  withExtraItems(
+    entry({ id: 'zhipu', label: '智谱 Coding Plan', keyRefs: ['ZAI_CODING_CN_API_KEY', 'ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'], endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', format: 'zai-coding', planOf: zaiPlanOf }),
+    zhipuAccountRows,
+  ),
 ]
 
 /**

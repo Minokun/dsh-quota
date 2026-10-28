@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { customHttpFetch } from '../src/direct.ts'
+import { DIRECT_ADAPTERS, customHttpFetch, zhipuAccountItems } from '../src/direct.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -81,4 +81,88 @@ test('newapi-account rejects a missing user id before sending a request', async 
   const fetchQuota = customHttpFetch({ id: 'account', label: 'Account', endpoint: 'https://newapi.example.com', keyRef: 'NEWAPI_ACCESS_TOKEN', format: 'newapi-account' })
   await assert.rejects(fetchQuota('system-access-token'), /userId must be a positive integer/)
   assert.equal(called, false)
+})
+
+
+// ── 智谱：API key 查余额（/api/biz/account/query-customer-account-report） ──
+
+const zhipu = DIRECT_ADAPTERS.find((adapter) => adapter.id === 'zhipu')!
+
+test('zhipu API key renders the standard-API balance without a console login', async () => {
+  const calls: string[] = []
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input)
+    calls.push(`${url} ${String((init?.headers as Record<string, string> | undefined)?.Authorization)}`)
+    if (url.includes('/api/monitor/usage/quota/limit')) {
+      return jsonResponse({
+        code: 200,
+        data: {
+          planName: 'pro',
+          limits: [
+            { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 12, nextResetTime: 1793287132998 },
+            { type: 'TIME_LIMIT', usage: 1000, currentValue: 10, remaining: 990, percentage: 1 },
+          ],
+        },
+      })
+    }
+    if (url.includes('/api/biz/account/query-customer-account-report')) {
+      return jsonResponse({
+        code: 200,
+        data: {
+          balance: 0,
+          // 与余额同源：可用余额优先
+          availableBalance: 0,
+          rechargeAmount: 120,
+          giveAmount: 94.908478,
+          totalSpendAmount: 214.908478,
+          todaySpendAmount: null,
+          frozenBalance: 0,
+        },
+      })
+    }
+    return new Response('not found', { status: 404 })
+  }) as typeof fetch
+
+  const snapshot = await zhipu.fetch('test-key')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.items, [
+    { label: '5 小时窗口', percent: 12, display: '已用 12%', resetAt: new Date(1793287132998).toISOString() },
+    { label: '搜索/工具额度', used: 10, limit: 1000, remaining: 990, percent: 1, resetAt: undefined },
+    { label: '账户余额', display: '¥0' },
+    { label: '累计消费', display: '¥214.91' },
+  ])
+  // 余额走的是标准 API key，不是控制台 JWT
+  assert.match(calls[1] ?? '', /query-customer-account-report Bearer test-key/)
+})
+
+test('zhipu keeps the quota rows when the balance endpoint is forbidden', async () => {
+  globalThis.fetch = (async (input) => {
+    const url = String(input)
+    if (url.includes('/api/monitor/usage/quota/limit')) {
+      return jsonResponse({ code: 200, data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 40 }] } })
+    }
+    return new Response('APIKey not allow access', { status: 403 })
+  }) as typeof fetch
+
+  const snapshot = await zhipu.fetch('test-key')
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.items, [{ label: '5 小时窗口', percent: 40, display: '已用 40%', resetAt: undefined }])
+})
+
+test('zhipuAccountItems prefers availableBalance and hides a zero today-spend', () => {
+  assert.deepEqual(
+    zhipuAccountItems({ data: { balance: 10, availableBalance: 5.5, totalSpendAmount: 0, todaySpendAmount: 0 } }),
+    [{ label: '账户余额', display: '¥5.5' }, { label: '累计消费', display: '¥0' }],
+  )
+  assert.deepEqual(
+    zhipuAccountItems({ balance: 7, totalSpendAmount: 214.908478, todaySpendAmount: 3.5 }),
+    [
+      { label: '账户余额', display: '¥7' },
+      { label: '累计消费', display: '¥214.91' },
+      { label: '今日消费', display: '¥3.5' },
+    ],
+  )
+  assert.deepEqual(zhipuAccountItems({ data: {} }), [])
+  assert.deepEqual(zhipuAccountItems(null), [])
 })
