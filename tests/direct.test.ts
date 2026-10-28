@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { customHttpFetch } from '../src/direct.ts'
+import { customHttpFetch, DIRECT_ADAPTERS, CATALOG_EXTRA } from '../src/direct.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -81,4 +81,99 @@ test('newapi-account rejects a missing user id before sending a request', async 
   const fetchQuota = customHttpFetch({ id: 'account', label: 'Account', endpoint: 'https://newapi.example.com', keyRef: 'NEWAPI_ACCESS_TOKEN', format: 'newapi-account' })
   await assert.rejects(fetchQuota('system-access-token'), /userId must be a positive integer/)
   assert.equal(called, false)
+})
+
+const zhipu = DIRECT_ADAPTERS.find((a) => a.id === 'zhipu')!
+
+test('zhipu adapter reads CREDIT_LIMIT windows (the Coding Plan meters credits, not tokens)', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    code: 200,
+    success: true,
+    data: {
+      limits: [
+        { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 12000, currentValue: 9132, remaining: 2867, percentage: 76, nextResetTime: 1793184944153 },
+        { type: 'CREDIT_LIMIT', unit: 6, number: 1, usage: 60000, currentValue: 60017, remaining: 0, percentage: 100, nextResetTime: 1793603577964 },
+      ],
+      level: 'pro',
+    },
+  })) as typeof fetch
+
+  const snapshot = await zhipu.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.label, '智谱 Coding Plan · pro')
+  assert.deepEqual(snapshot.items, [
+    { label: '5 小时窗口', used: 9132, limit: 12000, remaining: 2867, percent: 76, display: '已用 76%', resetAt: '2026-10-28T10:55:44.153Z' },
+    { label: '本周窗口', used: 60017, limit: 60000, remaining: 0, percent: 100, display: '已用 100%', resetAt: '2026-11-02T07:12:57.964Z' },
+  ])
+})
+
+test('zhipu adapter still reads TOKENS_LIMIT windows', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    code: 200,
+    data: {
+      limits: [
+        { type: 'TOKENS_LIMIT', unit: 3, number: 5, usage: 12000, currentValue: 9132, remaining: 2867, percentage: 76, nextResetTime: 1793184944153 },
+      ],
+    },
+  })) as typeof fetch
+
+  const snapshot = await zhipu.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.items[0]?.label, '5 小时窗口')
+  assert.equal(snapshot.items[0]?.remaining, 2867)
+  assert.equal(snapshot.items[0]?.percent, 76)
+})
+
+const minimax = CATALOG_EXTRA.find((a) => a.id === 'minimax-cn')!
+
+test('minimax adapter reports the 5h window and the weekly window', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    base_resp: { status_code: 0, status_msg: 'success' },
+    model_remains: [{
+      start_time: 1793167724570,
+      end_time: 1793185724570,
+      remains_time: 5580565,
+      current_interval_total_count: 0,
+      current_interval_usage_count: 0,
+      model_name: 'general',
+      current_weekly_total_count: 0,
+      current_weekly_usage_count: 0,
+      weekly_start_time: 1792910410812,
+      weekly_end_time: 1793515210812,
+      weekly_remains_time: 335066807,
+      current_interval_status: 1,
+      current_interval_remaining_percent: 65,
+      current_weekly_status: 1,
+      current_weekly_remaining_percent: 37,
+    }],
+  })) as typeof fetch
+
+  const snapshot = await minimax.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.items, [
+    { label: '5h 窗口', percent: 35, display: '已用 35%', resetAt: '2026-10-28T11:08:44.570Z' },
+    { label: '本周窗口', percent: 63, display: '已用 63%', resetAt: '2026-11-01T06:40:10.812Z' },
+  ])
+})
+
+test('minimax adapter still reports the 5h window when the weekly fields are absent', async () => {
+  globalThis.fetch = (async () => jsonResponse({
+    base_resp: { status_code: 0, status_msg: 'success' },
+    model_remains: [{
+      end_time: 1793185724570,
+      current_interval_total_count: 12000,
+      current_interval_usage_count: 4000,
+      current_interval_remaining_percent: 65,
+    }],
+  })) as typeof fetch
+
+  const snapshot = await minimax.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.items.length, 1)
+  assert.equal(snapshot.items[0]?.label, '5h 窗口')
+  assert.equal(snapshot.items[0]?.percent, 35)
 })
