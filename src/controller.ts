@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
-import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, type DirectAdapter } from './direct.ts'
+import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, opendesignVelaControlKey, type DirectAdapter } from './direct.ts'
 import { burnInsight, itemKey, mergeHistory, recordSamples, spendInsight, type HistoryMap } from './insights.ts'
 import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-file.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
@@ -96,7 +96,7 @@ export interface LlmProviderInfo {
 }
 
 /** Map a model-provider id (llm-pi-ai) onto a quota platform id. */
-function platformForProvider(provider: string): string {
+export function platformForProvider(provider: string): string {
   const p = provider.toLowerCase()
   if (p.includes('kimi')) return 'kimi'
   if (p.includes('deepseek')) return 'deepseek'
@@ -112,6 +112,7 @@ function platformForProvider(provider: string): string {
   if (p.includes('minimax')) return 'minimax'
   if (p.includes('step')) return 'stepfun'
   if (p.includes('xai') || p.includes('grok')) return 'xai'
+  if (p.includes('opendesign') || p.includes('open-design')) return 'opendesign'
   if (p.includes('opencode')) return 'opencode-go'
   if (p.includes('openai')) return 'openai-admin'
   if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
@@ -119,6 +120,67 @@ function platformForProvider(provider: string): string {
   // 其它含 ark 的 id），只用精确 id + 厂商常见写法。
   if (p === 'ark' || p.includes('volc') || p.includes('doubao')) return ARK_PLATFORM_ID
   return ''
+}
+
+/** One credential ref a DSH model provider adds on top of a platform's catalog refs. */
+export interface PlatformRefHint {
+  /** The provider's `apiKeyEnv` credential reference. */
+  ref: string
+  /** Model-provider id that declares the ref (rendered as the card's account tag). */
+  provider: string
+}
+
+/**
+ * Extra credential refs for one direct platform: every DSH model provider that
+ * maps onto the same platform (`deepseek-official` plus a hand-declared
+ * `deepseek-b` route, say) contributes its own `apiKeyEnv`, so a second
+ * account on the same platform renders as its own card instead of being
+ * invisible. A provider whose custom `baseURL` does not share the adapter's
+ * official origin is skipped on purpose — a third-party
+ * OpenAI/DeepSeek-compatible gateway must not be queried against the official
+ * balance endpoint with that gateway's key.
+ * @param adapter - the direct platform adapter whose row is being resolved.
+ * @param providers - DSH model providers (id + optional apiKeyEnv + baseURL).
+ * @returns refs beyond the adapter's own, each tagged with its provider id,
+ *   in provider order and deduplicated by ref.
+ */
+export function platformRefHints(adapter: DirectAdapter, providers: readonly LlmProviderInfo[]): PlatformRefHint[] {
+  // Admin-only endpoints (OpenAI/Anthropic organization keys) never take a
+  // normal model-provider key as an extra account.
+  if (adapter.extraRefsFromProviders === false) return []
+  const known = new Set([...adapter.keyRefs, ...adapter.envKeys])
+  const origins = new Set(adapter.origins ?? [])
+  const out: PlatformRefHint[] = []
+  for (const lp of providers) {
+    if (!lp.keyRef || known.has(lp.keyRef)) continue
+    if (platformForProvider(lp.id) !== adapter.id) continue
+    if (lp.baseURL !== undefined && origins.size > 0) {
+      let origin: string | undefined
+      try {
+        origin = new URL(lp.baseURL).origin
+      } catch {
+        origin = undefined
+      }
+      if (origin === undefined || !origins.has(origin)) continue
+    }
+    known.add(lp.keyRef)
+    out.push({ ref: lp.keyRef, provider: lp.id })
+  }
+  return out
+}
+
+/**
+ * Card label for one resolved ref: extra account rows append their
+ * model-provider id (`DeepSeek · deepseek-b`) so two cards on the same
+ * platform stay tellable apart; catalog refs keep the bare platform label.
+ * @param base - the label the adapter/catalog produced.
+ * @param ref - the credential ref the row resolved.
+ * @param hints - extra refs the platform accepted (from {@link platformRefHints}).
+ * @returns the row label.
+ */
+export function refRowLabel(base: string, ref: string, hints: readonly PlatformRefHint[]): string {
+  const hint = hints.find((h) => h.ref === ref)
+  return hint === undefined ? base : `${base} · ${hint.provider}`
 }
 
 /**
@@ -372,6 +434,33 @@ export class QuotaController implements QuotaControllerFace {
       }))
   }
 
+  /**
+   * 把 vela（Open Design）登录态里的控制面 key 同步进 DSH 凭证域。
+   *
+   * 为什么要有这一步：查 OD 额度需要 `vela_ctrl_…`，而这把 key 只由 vela 的
+   * 设备授权签发、任何网页都不显示——要求用户手抄既不现实，重新登录后还会
+   * 轮换。既然本机已经登录了 Open Design，就直接复用那份登录态：每次刷新
+   * 对比一次，变了就写回 `OPENDESIGN_CONTROL_KEY`，于是「在 OD 里重新登录」
+   * 就等于「面板恢复」。
+   *
+   * 失败策略：读不到登录态（没装 / 没登录）或凭证服务不可写时静默跳过——这是
+   * 常态而非错误，面板会以 missing-key 说明「需要先登录 Open Design」。
+   * @param credentials - DSH 凭证服务（不可用时直接跳过）。
+   */
+  private async syncOpendesignKey(credentials: CredentialProvider | undefined): Promise<void> {
+    if (!credentials) return
+    const vela = opendesignVelaControlKey()
+    if (vela === undefined) return
+    try {
+      const current = await credentials.resolve(credentialRef('OPENDESIGN_CONTROL_KEY'))
+      if (current?.value === vela) return
+      await credentials.set(credentialRef('OPENDESIGN_CONTROL_KEY'), vela)
+      this.ctx.logger.info('quota: OpenDesign 控制面 key 已从 vela 登录态同步')
+    } catch (error) {
+      this.ctx.logger.warn(`quota: OpenDesign key 同步失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   /** Every direct adapter: pinned + auto-discovered catalog + user-declared. */
   private allDirectAdapters(): DirectAdapter[] {
     return [...DIRECT_ADAPTERS, ...CATALOG_EXTRA, ...this.customHttpAdapters()]
@@ -385,13 +474,25 @@ export class QuotaController implements QuotaControllerFace {
       const credentials = this.getCredentials()
       const tools = this.ctx.get('tools')
 
+      // OpenDesign 的额度 key 复用 vela 登录态（见方法注释）：放在最前面，
+      // 后面 resolveKey 才拿得到。
+      await this.syncOpendesignKey(credentials)
+
+      // 同平台多账号：除了适配器自带的引用，还要把「映射到同一平台的 DSH
+      // 模型供应商」各自声明的 apiKeyEnv 并进来（例如自定义路由 deepseek-b →
+      // DEEPSEEK_B_API_KEY），第二个账号才会单独成卡而不是整行消失。卡片标签
+      // 追加供应商 id，同一平台并排两张卡才分得清谁是谁。
+      const llmProviders = this.getProviders()
+
       // One ROW PER RESOLVED REF: two accounts on the same platform (e.g.
-      // ZAI_CODING_CN_API_KEY + ZHIPU_API_KEY) render as two cards, and the
-      // model→platform correspondence can key on the exact ref.
-      const runDirect = async (adapter: DirectAdapter, pinned: boolean): Promise<ProviderSnapshot[]> => {
+      // ZAI_CODING_CN_API_KEY + ZHIPU_API_KEY, or DEEPSEEK_API_KEY +
+      // DEEPSEEK_B_API_KEY via a second DSH provider route) render as two
+      // cards, and the model→platform correspondence can key on the exact ref.
+      const runDirect = async (adapter: DirectAdapter, pinned: boolean, hints: readonly PlatformRefHint[] = []): Promise<ProviderSnapshot[]> => {
+        const labelOf = (base: string, ref: string): string => refRowLabel(base, ref, hints)
         const keys: ResolvedKey[] = []
         const seen = new Set<string>()
-        for (const ref of [...adapter.keyRefs, ...adapter.envKeys]) {
+        for (const ref of [...adapter.keyRefs, ...adapter.envKeys, ...hints.map((hint) => hint.ref)]) {
           if (seen.has(ref)) continue
           seen.add(ref)
           const key = await resolveKey(credentials, [ref], [ref])
@@ -403,7 +504,9 @@ export class QuotaController implements QuotaControllerFace {
             id: adapter.id,
             label: adapter.label,
             status: 'missing-key',
-            message: '未找到 API key（DSH 凭证与环境变量均无）',
+            message: adapter.id === 'opendesign'
+              ? '需要先登录 Open Design（vela CLI / 桌面版）才能查额度；登录后本插件自动复用该登录态，不用手填 key'
+              : '未找到 API key（DSH 凭证与环境变量均无）',
             via: 'api',
             items: [],
           }]
@@ -411,9 +514,10 @@ export class QuotaController implements QuotaControllerFace {
         const multi = keys.length > 1
         return Promise.all(keys.map(async (key): Promise<ProviderSnapshot> => {
           const id = multi ? `${adapter.id}#${key.ref}` : adapter.id
+          const label = labelOf(adapter.label, key.ref)
           const fail = (message: string): ProviderSnapshot => ({
             id,
-            label: adapter.label,
+            label,
             status: 'error',
             message,
             via: 'api',
@@ -423,7 +527,7 @@ export class QuotaController implements QuotaControllerFace {
           })
           try {
             const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
-            return { ...snapshot, id, keyRef: key.ref, keySource: key.source }
+            return { ...snapshot, id, label: labelOf(snapshot.label, key.ref), keyRef: key.ref, keySource: key.source }
           } catch (error) {
             // 网络抖动/限流/5xx 当场重试一次（鉴权错误重试无意义）。
             const message = error instanceof Error ? error.message : String(error)
@@ -431,7 +535,7 @@ export class QuotaController implements QuotaControllerFace {
             await sleep(FETCH_RETRY_DELAY_MS)
             try {
               const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
-              return { ...snapshot, id, keyRef: key.ref, keySource: key.source }
+              return { ...snapshot, id, label: labelOf(snapshot.label, key.ref), keyRef: key.ref, keySource: key.source }
             } catch (retryError) {
               return fail(retryError instanceof Error ? retryError.message : String(retryError))
             }
@@ -451,8 +555,11 @@ export class QuotaController implements QuotaControllerFace {
       const directJobs = [
         // Built-ins are all auto-discovered now: no key → no row. Only
         // user-declared custom platforms stay pinned (explicit user intent).
-        ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(a, false)),
-        ...CATALOG_EXTRA.filter(directVisible).map((a) => runDirect(a, false)),
+        ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(a, false, platformRefHints(a, llmProviders))),
+        // OpenDesign 是唯一「钉住」的目录平台：DSH 里配了 opendesign 供应商却
+        // 没登录 vela 时，用户需要看到一句「要先登录 Open Design」，而不是
+        // 卡片凭空消失（额度 key 只能由 vela 登录签发）。
+        ...CATALOG_EXTRA.filter(directVisible).map((a) => runDirect(a, a.id === 'opendesign', platformRefHints(a, llmProviders))),
         ...customHttp.map((a) => runDirect(a, true)),
       ]
 
@@ -514,7 +621,6 @@ export class QuotaController implements QuotaControllerFace {
       }
 
       // DSH 模型供应商：id → apiKeyEnv（供 pill 精确对应平台卡片）。
-      const llmProviders = this.getProviders()
       const providerKeyRefs: Record<string, string> = {}
       for (const lp of llmProviders) if (lp.keyRef) providerKeyRefs[lp.id] = lp.keyRef
 
@@ -753,9 +859,13 @@ export class QuotaController implements QuotaControllerFace {
         return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
       }
     }
-    const direct = this.allDirectAdapters().find((a) => a.id === platform)
+    // 多账号卡片 id 形如 `deepseek#DEEPSEEK_B_API_KEY`：按该行自己的引用探活，
+    // 不能落回适配器的默认引用（那会测到另一张卡）。
+    const [platformId, explicitRef] = platform.split('#')
+    const direct = this.allDirectAdapters().find((a) => a.id === platformId)
     if (direct) {
-      const key = await resolveKey(this.getCredentials(), direct.keyRefs, direct.envKeys)
+      const refs = explicitRef ? [explicitRef] : [...direct.keyRefs, ...direct.envKeys]
+      const key = await resolveKey(this.getCredentials(), refs, refs)
       if (!key) return { ok: false, ms: 0, message: '未找到 API key（DSH 凭证与环境变量均无）' }
       try {
         await direct.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))

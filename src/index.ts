@@ -208,15 +208,20 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   // Auto-sync: a key added/changed in DSH (any known ref, including custom
-  // platforms' keyRefs) refreshes the panel. dsh ≤0.1.4 emitted one
+  // platforms' keyRefs and the apiKeyEnv of a second provider route on the
+  // same platform) refreshes the panel. dsh ≤0.1.4 emitted one
   // `credentials/updated` event; 0.1.5 splits it into
   // `credentials/reference-updated` (per ref) and `credentials/record-updated`
   // (per record key) — subscribe to all of them; names the running dsh does
   // not emit simply never fire.
   let pending: ReturnType<typeof setTimeout> | undefined
   const onCredentialTouched = (ref: unknown): void => {
-    const custom = quota.state().httpPlatforms.some((p) => p.keyRef === (ref as string))
-    if (!KNOWN_REFS.has(ref as string) && !custom) return
+    const name = ref as string
+    const custom = quota.state().httpPlatforms.some((p) => p.keyRef === name)
+    // 多账号：同平台第二个供应商的 apiKeyEnv（如 DEEPSEEK_B_API_KEY）不在
+    // 内置目录里，但同样要触发刷新，否则新加的卡要等下一个周期才出现。
+    const providerRef = llmProvidersOf(ctx, settingsForms).some((lp) => lp.keyRef === name)
+    if (!KNOWN_REFS.has(name) && !custom && !providerRef) return
     if (pending !== undefined) clearTimeout(pending)
     pending = setTimeout(() => {
       pending = undefined

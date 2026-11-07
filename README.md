@@ -26,6 +26,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 - **当前平台优先**：面板里「当前在用」的模型所属平台的卡片自动排到最前（紧跟第一行的「本会话」用量卡片），换模型时顺序实时跟着变；其余平台仍按内置顺序（直连 API 在前、MCP 兜底在后）
 - **本会话用量可折叠**：面板第一行「本会话」默认收起，只显示模型与估算花费；点标题展开输入 / 缓存读 / 输出 token、估算成本与计费周期行（展开状态会记住）。余额型平台的计费周期行在样本不足 7 天时只报「近 N 天实测 + 日均」，不再把日均外推成「近 7 天总额」
 - **Key 自动同步**：直连平台的 API key 直接读 DSH 凭证域（与模型配置同一批 `apiKeyEnv` 引用）——DSH 里加过 key 就不用手动再填；凭证变更自动触发刷新
+- **同平台多账号**：同一平台在 DSH 里挂了第二个模型供应商（例如再建一个 `deepseek-b` 路由，`apiKeyEnv` 指向 `DEEPSEEK_B_API_KEY`、baseURL 填官方地址），面板会按凭证引用出**第二张卡**，标题用 `· deepseek-b` 区分，两张卡各查各的 key、互不覆盖。注意 DSH 本身一个供应商只有一个 `apiKeyEnv`——在同一个供应商卡片里重复填 key 是**覆盖**，不是新增账号；第三方兼容网关（baseURL 不是官方域名）也不会被拿来查官方余额接口
 - **手动 Key 兜底**：面板里可手动保存 key（存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置）
 - **消耗速率与剩余时长预估**：本地时序采样（≥10 分钟一个点、保留 14 天，落盘到 `$DSH_HOME/dsh-quota/history.json`，重启不清零），在当前配额窗口段上计算平均消耗速率（%/h），条目下方给出「约 x 小时后耗尽」预估；窗口重置自动截断分段，不会跨重置算出错误速率；`quota_refresh` 工具同步透出
 - **余额型平台的「近 7 天消耗 / 余额还能撑多久」**：余额条目按**日历时间**口径算——近 7 天实测余额降幅 ÷ 跨度（闲置时间也算进分母）得到真实日均，再外推 7 天花费与余额耗尽时间。样本跨度不足 24 小时不显示（几十分钟的活跃速率外推一周会放大 3 倍左右，这正是「日均 ¥20 却被算成 ¥430/周」的来源）；跨度不足 7 天会标注「按 N 天实测折算」
@@ -39,7 +40,11 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 **钉住平台**（始终显示，缺 key 时提示）：Kimi Code、DeepSeek、智谱 Coding Plan。
 
-**自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt、**OpenAI Platform**、**Anthropic Claude**。面板「API Key 管理」覆盖全部直连平台——填 key 即接入（写入 DSH 凭证域，模型配置也能用）。
+**自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt、**OpenDesign**、**OpenAI Platform**、**Anthropic Claude**。面板「API Key 管理」覆盖全部直连平台——填 key 即接入（写入 DSH 凭证域，模型配置也能用）。
+
+**OpenDesign（open-design.ai / Vela）**：额度同样**不在推理 API 上**——模型面 `amr-link.open-design.ai/v1` 只认 `sk-amr-…` 推理 key，没有任何额度路由；额度在**控制面** `amr-api.open-design.ai/api/v1`，且只认 `vela_ctrl_…` 控制面 key（任何网页都不印这个 key，由 vela CLI 设备授权签发）。所以凭证引用是 `OPENDESIGN_CONTROL_KEY`（别名 `VELA_CONTROL_KEY`），**不是**给模型供应商配的 `OPENDESIGN_API_KEY`：后者填进来只会得到 401，面板会直接告诉你这一点。
+
+**查 OD 额度必须先登录 Open Design**：那把 key 由 vela 的设备授权签发，没有任何网页会显示它。所以本插件不要求你手抄 key ——它每次刷新都直接读 vela 的登录态（`~/.amr/config.json` 的 `profiles.prod.controlKey`），变了就写回 DSH 凭证域，于是「在 Open Design 里登录 / 重新登录」就等于「面板恢复」，key 轮换也自动跟上。没登录时卡片不会消失，而是钉住显示「需要先登录 Open Design（vela CLI / 桌面版）才能查额度」，卡片上的灰字会写明本次读数用的是「Open Design 登录态」还是「DSH 凭证域」。查询路径：`GET /workspaces/current` 解析 workspaceId → `GET /workspaces/{id}/billing/preflight` 取额度窗口与钱包 → `GET /billing/summary` 补累计消费（拿不到只少一行）。卡片显示 `7 天窗口`（credits 与折算 USD）、**钱包余额**（负数即欠费，照实显示）、累计消费；窗口各自独立、**绝不相加**。多工作空间时用环境变量 `OPENDESIGN_WORKSPACE_ID` 钉住。注意别用 `/billing/coding-plan-usage`——那个端点对控制面 key 返回 401，`preflight` 才是能用的。
 
 **火山方舟（Volcengine Ark）**：额度**不在推理 API 上**——`ARK_API_KEY`（`ark-…`）只能调模型，所以 DSH 里只配了它时，卡片只能探活显示「模型服务 在线」，这是设计如此、不是查询失败。套餐用量要走火山引擎**控制面 OpenAPI**（`open.volcengineapi.com`，`GetCodingPlanUsage` / `GetAgentPlanAFPUsage`，HMAC-SHA256 签名），必须用 **AccessKey ID + SecretAccessKey**：在面板底部「API Key 管理」里把两者按 `AK:SK`（或控制台给的合成串 `AK/SK`、整行 `AccessKeyID/SecretAccessKey: …`）填进「火山方舟 (AK/SK)」，插件会自动拆开，或直接写凭证引用 `VOLC_ACCESS_KEY_ID` / `VOLC_ACCESS_KEY_SECRET`（也认 `VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY` 等别名）。AK/SK 建议用 IAM 子用户并只授 `ArkReadOnlyAccess`（只读）；Coding Plan 与 Agent Plan 共用同一对 AK/SK，插件先试 Coding Plan、未订阅时自动落到 Agent Plan。
 

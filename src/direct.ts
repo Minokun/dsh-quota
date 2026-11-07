@@ -18,6 +18,9 @@
  * @module dsh-quota/direct
  */
 
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { CustomHttpPlatform, ProviderSnapshot, QuotaItem } from './config.ts'
 
 /** One direct platform adapter. */
@@ -28,6 +31,21 @@ export interface DirectAdapter {
   keyRefs: string[]
   /** Environment variables tried as fallback. */
   envKeys: string[]
+  /**
+   * Official endpoint origin(s). A custom DSH model provider that maps onto
+   * this platform contributes its own credential ref as an extra account card
+   * only when its `baseURL` shares one of these origins — a third-party
+   * OpenAI/DeepSeek-compatible gateway must not be queried against the
+   * official balance endpoint with the gateway's key.
+   */
+  origins?: string[]
+  /**
+   * Whether same-platform DSH model providers may contribute extra credential
+   * refs (multi-account cards). Defaults to true; org-admin endpoints
+   * (OpenAI/Anthropic Admin keys) set it to false — a normal model-provider
+   * key is not an admin key and would only produce a 401 card.
+   */
+  extraRefsFromProviders?: boolean
   /** Fetch the snapshot with the resolved key. */
   fetch(key: string, signal?: AbortSignal): Promise<ProviderSnapshot>
 }
@@ -474,6 +492,8 @@ interface CatalogEntry {
   buildUrl?: (now: number) => string
   /** Gray note rendered under the card head (e.g. what the API cannot report). */
   note?: string
+  /** Opt out of extra account cards from same-platform DSH providers (admin-only endpoints). */
+  adminOnly?: boolean
 }
 
 function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) => Promise<ProviderSnapshot> {
@@ -567,6 +587,223 @@ export function withExtraItems(base: DirectAdapter, extra: (key: string, signal?
   }
 }
 
+// ── OpenDesign（open-design.ai / Vela）───────────────────────────────────────
+//
+// OpenDesign（下称 OD）有两个平面，key 不能混用：
+//   - 控制面 https://amr-api.open-design.ai/api/v1 ← 套餐 / 钱包 / 额度窗口，
+//     只认 `vela_ctrl_…`（由 vela CLI 设备授权签发，任何网页都不印这个 key）
+//   - 模型面 https://amr-link.open-design.ai/v1   ← 只做推理，认 `sk-amr-…`
+// 推理 key 打控制面一律 401，所以「模型面查额度」这条路根本不存在 —— 这正是
+// 社区插件 dsh-od-quota 必须单独存在、而 DSH 里 opendesign 供应商只能探活的
+// 原因。额度必须走控制面，且要先知道 workspaceId（个人账号查
+// /workspaces/current 即可）。
+//
+// 端点（2026-11 实测，本机真实账户）：
+//   GET /workspaces/current                        → workspaceId / role
+//   GET /workspaces/{id}/billing/preflight          → codingPlan.windows[] + balanceUsd
+//   GET /workspaces/{id}/wallet/balance             → balanceUsd（与 preflight 一致）
+//   GET /billing/summary                            → creditsPerUsd / 累计消费 / 套餐
+// 注意 /billing/coding-plan-usage 对 control key 返回 401 —— 别照抄 dsh-cost-meter
+// 文档里的那个端点，preflight 才是能用的（dsh-od-quota 也用 preflight）。
+
+/** OD 控制面根。模型面是另一个 host，刻意分开。 */
+const OPENDESIGN_CONSOLE = 'https://amr-api.open-design.ai/api/v1'
+
+/** 额度以 credits 计；控制面自报 creditsPerUsd=10000，查到前先按它折算。 */
+const OPENDESIGN_FALLBACK_CREDITS_PER_USD = 10_000
+
+/** 凭证引用名：控制面 key。模型供应商配的 `OPENDESIGN_API_KEY` 是推理 key，不是它。 */
+const OPENDESIGN_CONTROL_REF = 'OPENDESIGN_CONTROL_KEY'
+
+/**
+ * vela（Open Design 桌面版 / CLI）把登录态存在这里。
+ *
+ * 查 OD 额度**必须先登录 Open Design**：控制面 key `vela_ctrl_…` 只由 vela 的
+ * 设备授权签发，任何网页都不显示它。与其让用户在面板里手抄这把 key（还会在
+ * 重新登录后失效），不如直接复用它——这个文件就是"我已经登录了 OD"的凭据。
+ */
+/** 登录态文件路径：每次调用现算，不在模块加载时固化（HOME 变了也能读对）。 */
+function opendesignVelaConfigPath(): string {
+  return join(homedir(), '.amr', 'config.json')
+}
+
+/**
+ * 读 vela 登录态里的 controlKey（`profiles.<profile>.controlKey`）。
+ *
+ * 只读、不写回、不缓存：每次刷新都重新读，所以用户在 Open Design 里换了账号
+ * 或重新登录后，面板下一次刷新就跟上，不需要任何手动同步。
+ * @param profile - vela 的 profile 名，默认 `prod`。
+ * @returns key 文本，或 `undefined`（没装 vela / 没登录 / 文件形状变了）。
+ */
+export function opendesignVelaControlKey(profile = 'prod'): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(opendesignVelaConfigPath(), 'utf8')) as Record<string, unknown>
+    const profiles = (raw.profiles ?? {}) as Record<string, unknown>
+    const entry = (profiles[profile] ?? {}) as Record<string, unknown>
+    const key = entry.controlKey
+    return typeof key === 'string' && key.trim().length > 0 ? key.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 千分位整数（credits 值通常上万，裸数字不可读）。 */
+function thousands(n: number): string {
+  return n.toLocaleString('en-US', { maximumFractionDigits: 0 })
+}
+
+/** durationSeconds → 面板标签。窗口按长度升序排，与 zai 的既有约定一致。 */
+function opendesignWindowLabel(seconds: number): string {
+  if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400} 天窗口`
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} 小时窗口`
+  return `${Math.round(seconds / 60)} 分钟窗口`
+}
+
+/**
+ * `codingPlan.windows[]` → 面板行。
+ *
+ * 每个窗口各自独立（anchored_recurring，7 天窗从订阅起算），**绝不相加**、
+ * 也不合并成「共 N credits」——套餐可能存在并行窗口，相加会虚高。
+ * @param plan - preflight 响应里的 `codingPlan` 本体。
+ * @param creditsPerUsd - credits → USD 的折算率。
+ */
+export function opendesignPlanItems(plan: unknown, creditsPerUsd: number): QuotaItem[] {
+  const raw = (plan !== null && typeof plan === 'object' ? plan : {}) as Record<string, unknown>
+  const rows = Array.isArray(raw.windows) ? raw.windows as Array<Record<string, unknown>> : []
+  const items: QuotaItem[] = []
+  for (const row of rows.slice().sort((a, b) => (num(a.durationSeconds) ?? 0) - (num(b.durationSeconds) ?? 0))) {
+    const duration = num(row.durationSeconds)
+    const used = num(row.usedCredits)
+    const limit = num(row.limitCredits)
+    const remaining = num(row.remainingCredits)
+      ?? (used !== undefined && limit !== undefined ? limit - used : undefined)
+    if (duration === undefined || limit === undefined || limit <= 0) continue
+    const left = remaining ?? 0
+    items.push({
+      label: opendesignWindowLabel(duration),
+      used,
+      limit,
+      remaining,
+      percent: pct(used, limit),
+      resetAt: str(row.resetsAt),
+      display: `剩 ${thousands(left)} / ${thousands(limit)} credits (${opendesignUsdText(left / creditsPerUsd)})`,
+    })
+  }
+  return items
+}
+
+/**
+ * 控制面 GET，把 HTTP 状态码翻译成能直接照着修的中文错误。
+ *
+ * 401 的最常见原因是把 `sk-amr-…` 推理 key 填到了这里：面板如果只说
+ * 「HTTP 401 unauthenticated」，用户永远猜不到要换一种 key。
+ */
+async function opendesignGet(path: string, headers: Record<string, string>, signal: AbortSignal | undefined, label: string): Promise<unknown> {
+  try {
+    return await getJson(`${OPENDESIGN_CONSOLE}${path}`, headers, signal)
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error)
+    const status = num(/^HTTP (\d+)/.exec(text)?.[1])
+    if (status === 401) throw new Error(`${label} 401：额度查询只认 vela_ctrl_… 控制面 key；sk-amr-… 推理 key 没有这个权限（在 Open Design 里登录后由 vela CLI 签发）`)
+    if (status === 403) throw new Error(`${label} 403：该账号没有查看额度的权限`)
+    if (status === 404) throw new Error(`${label} 404：workspace 不存在，或这个 key 属于另一个工作空间`)
+    if (status === 429) throw new Error(`${label} 429：请求过于频繁`)
+    throw new Error(`${label} 失败：${text}`)
+  }
+}
+
+/** 面板行里的金额：负数（欠费）也照实显示，不加括号不加色。 */
+function opendesignUsdText(v: number): string {
+  const body = Math.abs(v).toFixed(2)
+  return v < 0 ? `-$${body}` : `$${body}`
+}
+
+/**
+ * OpenDesign 额度查询：解析 workspace → 读 preflight → 可选读 summary。
+ *
+ * 钱包余额取 preflight 的 `balanceUsd`（与控制面 /wallet/balance 和 vela CLI
+ * 一致）；`/billing/summary` 的 `balanceUsd` 在同一账户上报 0.0000，是另一套
+ * 口径，不要用它当余额。summary 只用来补累计消费这些纯统计字段。
+ */
+export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal): Promise<ProviderSnapshot> {
+  // vela 登录态里的 key 永远优先：用户重新登录 OD 后 controlKey 可能轮换，宿主
+  // 侧的同步（controller.syncOpendesignKey）负责把它写回凭证域，这里再兜一层，
+  // 免得凭证服务写失败时面板一直用旧 key 撞 401。
+  const fromVela = opendesignVelaControlKey()
+  const credential = fromVela ?? key
+  const headers = { Authorization: `Bearer ${credential}` }
+  // 多工作空间的逃生口：控制面 /workspaces/current 只给「当前」工作空间，
+  // 团队账号下想盯另一个 workspace 时用环境变量钉住，省掉一次解析请求。
+  const pinned = process.env.OPENDESIGN_WORKSPACE_ID?.trim() ?? ''
+  let workspace = pinned
+  if (workspace.length === 0) {
+    const current = await opendesignGet('/workspaces/current', headers, signal, 'workspaces/current')
+    const currentBody = (current ?? {}) as Record<string, unknown>
+    workspace = str(currentBody.activeWorkspaceId) ?? str(currentBody.workspaceId) ?? ''
+    if (workspace.length === 0) throw new Error('该 key 没有可读的工作空间（workspaces/current 没返回 workspaceId）')
+  }
+
+  const preflight = (await opendesignGet(
+    `/workspaces/${encodeURIComponent(workspace)}/billing/preflight`,
+    headers,
+    signal,
+    'billing/preflight',
+  ) ?? {}) as Record<string, unknown>
+
+  // summary 是锦上添花：拿不到只是少几行统计，不该把整张卡变成 error。
+  let summary: Record<string, unknown> | undefined
+  try {
+    const body = await opendesignGet('/billing/summary', headers, signal, 'billing/summary')
+    if (body !== null && typeof body === 'object') summary = body as Record<string, unknown>
+  } catch {
+    /* ignore */
+  }
+
+  const reportedRate = num(summary?.creditsPerUsd)
+  const creditsPerUsd = reportedRate !== undefined && reportedRate > 0 ? reportedRate : OPENDESIGN_FALLBACK_CREDITS_PER_USD
+
+  const plan = preflight.codingPlan
+  const items = opendesignPlanItems(plan, creditsPerUsd)
+
+  const balance = num(preflight.balanceUsd) ?? num(summary?.balanceUsd)
+  if (balance !== undefined) {
+    items.push({ label: '钱包余额', display: opendesignUsdText(balance), remaining: balance })
+  }
+
+  const consumed = num(summary?.totalConsumedUsd)
+  if (consumed !== undefined) {
+    const calls = num(summary?.usageCount)
+    items.push({
+      label: '累计消费',
+      display: `${opendesignUsdText(consumed)}${calls !== undefined ? ` · ${thousands(calls)} 次调用` : ''}`,
+    })
+  }
+
+  // eligible=false 是明确事实（没有 Design Plan，全按钱包计费），要说明而不是
+  // 显示成「没有额度窗口」这种像故障的样子。
+  const eligible = (plan as Record<string, unknown> | undefined)?.eligible
+  if (items.length === 0) {
+    throw new Error(eligible === false
+      ? '该账号没有 Design Plan 额度，调用按钱包余额计费'
+      : '控制面没有返回任何额度窗口或余额')
+  }
+
+  const tier = str((plan as Record<string, unknown> | undefined)?.tier)
+  const funding = str(preflight.funding)
+  const notes: string[] = [`workspace ${workspace}`]
+  if (funding !== undefined) notes.push(`计费来源 ${funding}`)
+  // 让面板说清这把 key 是哪儿来的：复用 OD 登录态还是 DSH 凭证域里手填的。
+  notes.push(fromVela !== undefined ? '凭证复用 Open Design 登录态' : '凭证来自 DSH 凭证域')
+  return {
+    id: 'opendesign',
+    label: tier !== undefined && tier.length > 0 ? `OpenDesign · ${tier}` : 'OpenDesign',
+    status: 'ok',
+    via: 'api',
+    message: notes.join(' · '),
+    items,
+  }
+}
+
 /** Origin of a catalog endpoint, or `undefined` when it is not a parseable URL. */
 function endpointOrigin(endpoint: string): string | undefined {
   try {
@@ -634,6 +871,19 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
   entry({ id: 'deepinfra', label: 'DeepInfra', keyRefs: ['DEEPINFRA_API_KEY', 'DEEPINFRA_TOKEN'], endpoint: 'https://api.deepinfra.com/payment/checklist?compute_owed=true', format: 'deepinfra-billing' }),
   entry({ id: 'venice', label: 'Venice', keyRefs: ['VENICE_API_KEY', 'VENICE_KEY'], endpoint: 'https://api.venice.ai/api/v1/billing/balance', format: 'venice-balance' }),
   entry({ id: 'neuralwatt', label: 'NeuralWatt', keyRefs: ['NEURALWATT_API_KEY'], endpoint: 'https://api.neuralwatt.com/v1/quota', format: 'neuralwatt-quota' }),
+  // OpenDesign（open-design.ai / Vela）：见文件上方那一段注释。keyRefs 是
+  // 控制面 key，不是模型供应商配置里那个 OPENDESIGN_API_KEY（推理 key）——
+  // 两者权限完全不同，填错只会得到 401。`extraRefsFromProviders: false`
+  // 也是同一个理由：DSH 的 opendesign 供应商声明的 apiKeyEnv 是推理 key，
+  // 让它作为「额外账号卡」参与查询只会多出一张 401 的卡。
+  {
+    id: 'opendesign',
+    label: 'OpenDesign',
+    keyRefs: ['OPENDESIGN_CONTROL_KEY', 'VELA_CONTROL_KEY'],
+    envKeys: ['OPENDESIGN_CONTROL_KEY', 'VELA_CONTROL_KEY'],
+    extraRefsFromProviders: false,
+    fetch: fetchOpendesignSnapshot,
+  },
   // 国外官方平台：需要组织级 Admin key（普通 sk-* / 项目 key 会被上游拒绝），
   // 只能拿到用量/成本，拿不到余额——卡片上用 note 明确说明。
   entry({
@@ -642,6 +892,7 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     keyRefs: ['OPENAI_ADMIN_KEY'],
     endpoint: 'https://api.openai.com/v1/organization/costs',
     format: 'openai-costs',
+    adminOnly: true,
     note: 'Admin API：仅用量/成本，余额见 OpenAI 后台',
     buildUrl: (now) => `https://api.openai.com/v1/organization/costs?start_time=${String(Math.floor(now / 1000) - 30 * 86400)}&bucket_width=1d&limit=31`,
   }),
@@ -653,6 +904,7 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     format: 'anthropic-costs',
     auth: 'x-api-key',
     headers: { 'anthropic-version': '2023-06-01', 'User-Agent': UA },
+    adminOnly: true,
     note: 'Admin API：仅用量/成本（无余额接口）',
     buildUrl: (now) => `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${new Date(now - 30 * 86400_000).toISOString()}&bucket_width=1d&limit=31`,
   }),

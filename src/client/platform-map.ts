@@ -23,6 +23,7 @@ export function platformForProvider(provider: string): string {
   if (p.includes('minimax')) return 'minimax'
   if (p.includes('step')) return 'stepfun'
   if (p.includes('xai') || p.includes('grok')) return 'xai'
+  if (p.includes('opendesign') || p.includes('open-design')) return 'opendesign'
   if (p.includes('opencode')) return 'opencode-go'
   if (p.includes('openai')) return 'openai-admin'
   if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
