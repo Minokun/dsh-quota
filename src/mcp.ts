@@ -12,6 +12,79 @@ import type { ProviderSnapshot, QuotaItem } from './config.ts'
 /** Thin wrapper over ctx.tools.execute for one MCP tool. */
 export type ToolExec = (name: string, args?: Record<string, unknown>) => Promise<unknown>
 
+/** One MCP tool call's outcome, normalized across `ctx.tools.execute` generations. */
+export interface ToolCallOutcome {
+  isError: boolean
+  /** Canonical JSON value of a successful call. */
+  value?: unknown
+  /** Upstream failure message of a failed call. */
+  message?: string
+}
+
+/** `ctx.tools.execute` as whichever DSH generation the host ships (see {@link callTool}). */
+type LooseToolRuntime = { execute(input: unknown): Promise<unknown> }
+
+/**
+ * Whether this tool runtime takes a whole batch instead of a single call.
+ *
+ * DSH 0.2.2 replaced `execute({callId,name,arguments})` with
+ * `execute({calls,signal,...})` and moved dispatch behind a selected executor;
+ * the legacy single-call shape now reaches the batch scheduler, which reads
+ * `input.calls.map` and rejects with `ToolBatchExecutionError`
+ * ("Tool batch execution failed") before any tool body runs — that was the
+ * BigModel row's error after the 0.2.2 upgrade. The batch-only executor seam
+ * (`selectExecutor`/`definitions`, both introduced with that split) is the
+ * discriminator; 0.2.1 exposes neither.
+ * @param tools - the host tool runtime.
+ * @returns true when `execute` expects a `{ calls, signal }` batch input.
+ */
+export function batchExecuteCapable(tools: LooseToolRuntime): boolean {
+  const probe = tools as unknown as Record<string, unknown>
+  return typeof probe.selectExecutor === 'function' || typeof probe.definitions === 'function'
+}
+
+/**
+ * Run one tool call through either runtime generation and normalize the result.
+ * The batch shape carries raw model-style arguments (`arguments` is JSON text),
+ * so the call is encoded as a one-block batch; the legacy shape takes parsed
+ * arguments and resolves to one result object.
+ * @param tools - the host tool runtime.
+ * @param name - public `mcp__<server>__<tool>` name.
+ * @param args - parsed tool arguments.
+ * @param signal - cancellation/deadline for the call.
+ * @returns the normalized outcome; unknown-tool failures still reject so
+ *   {@link runMcpAdapter} can tell "server not registered" from a query error.
+ */
+export async function callTool(
+  tools: LooseToolRuntime,
+  name: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<ToolCallOutcome> {
+  if (batchExecuteCapable(tools)) {
+    const batch = (await tools.execute({
+      calls: [{ type: 'tool-call', id: crypto.randomUUID(), name, arguments: JSON.stringify(args) }],
+      signal,
+    })) as { results?: Array<{ result?: { isError?: boolean; value?: unknown; error?: { message?: unknown } } }> }
+    const result = batch?.results?.[0]?.result
+    if (result === undefined) throw new Error(`tool runtime returned no result for "${name}"`)
+    if (result.isError === true) {
+      return { isError: true, message: typeof result.error?.message === 'string' ? result.error.message : String(result.error?.message ?? 'error') }
+    }
+    return { isError: false, value: result.value }
+  }
+  const outcome = (await tools.execute({
+    callId: crypto.randomUUID(),
+    name,
+    arguments: args,
+    signal,
+  })) as { isError?: boolean; value?: unknown; error?: { message?: unknown } }
+  if (outcome?.isError === true) {
+    return { isError: true, message: typeof outcome.error?.message === 'string' ? outcome.error.message : String(outcome.error?.message ?? 'error') }
+  }
+  return { isError: false, value: outcome?.value }
+}
+
 /** One MCP-backed platform adapter. */
 export interface McpAdapter {
   id: string
@@ -427,14 +500,9 @@ export async function runMcpAdapter(tools: ToolRuntime, adapter: McpAdapter): Pr
 
   for (const call of adapter.calls) {
     try {
-      const outcome = await tools.execute({
-        callId: crypto.randomUUID() as never,
-        name: call.name,
-        arguments: call.args ?? {},
-        signal: AbortSignal.timeout(20000),
-      })
+      const outcome = await callTool(tools as LooseToolRuntime, call.name, call.args ?? {}, AbortSignal.timeout(20000))
       if (outcome.isError) {
-        const message = typeof outcome.error?.message === 'string' ? outcome.error.message : String(outcome.error ?? 'error')
+        const message = outcome.message ?? 'error'
         if (/not found|unknown tool|no tool|unregistered/i.test(message)) {
           unknownCount++
           continue // 单个工具不存在只跳过（旧版 MCP 少工具时其余工具仍可用）

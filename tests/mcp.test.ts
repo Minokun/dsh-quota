@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { MCP_ADAPTERS } from '../src/mcp.ts'
+import { MCP_ADAPTERS, batchExecuteCapable, callTool, runMcpAdapter } from '../src/mcp.ts'
 
 const supawriter = MCP_ADAPTERS.find((adapter) => adapter.id === 'supawriter')!
 
@@ -75,4 +75,109 @@ test('bigmodel marks an ended subscription instead of pretending it is active', 
     },
   ])
   assert.deepEqual(items, [{ label: 'GLM Coding Pro', display: '已结束 · 原至 2025-02-01' }])
+})
+
+// ── ctx.tools.execute generation compatibility ──────────────────────────────
+
+/**
+ * DSH 0.2.2 switched `tools.execute` from one call to a `{ calls, signal }`
+ * batch and moved dispatch behind a selected executor. Sending the legacy
+ * single-call input to a 0.2.2 runtime reaches the batch scheduler, which
+ * throws `ToolBatchExecutionError` ("Tool batch execution failed") before any
+ * tool body runs — the BigModel row reported exactly that after upgrading.
+ * Both input shapes must therefore keep working.
+ */
+function fakeTools(shape: 'legacy' | 'batch', reply: unknown | Error): { execute(input: unknown): Promise<unknown>; seen: unknown[]; selectExecutor?: () => void; definitions?: () => [] } {
+  const seen: unknown[] = []
+  const record = (input: unknown): void => {
+    seen.push(input)
+  }
+  if (shape === 'batch') {
+    return {
+      seen,
+      selectExecutor: () => undefined,
+      definitions: () => [],
+      async execute(input) {
+        record(input)
+        if (reply instanceof Error) throw reply
+        return { results: [{ callId: 'c1', result: reply }], additionalContexts: [], concluded: false }
+      },
+    }
+  }
+  return {
+    seen,
+    async execute(input) {
+      record(input)
+      if (reply instanceof Error) throw reply
+      return reply
+    },
+  }
+}
+
+test('callTool encodes a one-call batch for the 0.2.2 executor', async () => {
+  const tools = fakeTools('batch', {
+    isError: false,
+    value: { content: [{ type: 'text', text: '{"basicCustomerInfo":{"balance":1}}' }] },
+    content: [],
+  })
+  const outcome = await callTool(tools, 'mcp__bigmodel__bm_account_set', { pageSize: 9999 }, AbortSignal.timeout(1000))
+  assert.equal(outcome.isError, false)
+  assert.deepEqual(outcome.value, { content: [{ type: 'text', text: '{"basicCustomerInfo":{"balance":1}}' }] })
+  const input = tools.seen[0] as { calls: Array<{ type: string; name: string; arguments: string }>; signal: AbortSignal }
+  assert.equal(input.calls.length, 1)
+  assert.equal(input.calls[0]!.type, 'tool-call')
+  assert.equal(input.calls[0]!.name, 'mcp__bigmodel__bm_account_set')
+  assert.deepEqual(JSON.parse(input.calls[0]!.arguments), { pageSize: 9999 })
+})
+
+test('callTool normalizes a failed batch result to a message', async () => {
+  const tools = fakeTools('batch', { isError: true, error: { message: 'upstream 500' }, content: [] })
+  assert.deepEqual(await callTool(tools, 'mcp__bigmodel__bm_account_set', {}, AbortSignal.timeout(1000)), {
+    isError: true,
+    message: 'upstream 500',
+  })
+})
+
+test('callTool keeps the legacy single-call shape for 0.2.1 runtimes', async () => {
+  const tools = fakeTools('legacy', { isError: false, value: { ok: 1 } })
+  const outcome = await callTool(tools, 'mcp__bigmodel__bm_account_set', {}, AbortSignal.timeout(1000))
+  assert.deepEqual(outcome, { isError: false, value: { ok: 1 } })
+  const input = tools.seen[0] as { callId: string; name: string; arguments: Record<string, unknown> }
+  assert.equal(input.name, 'mcp__bigmodel__bm_account_set')
+  assert.deepEqual(input.arguments, {})
+  assert.equal(typeof input.callId, 'string')
+})
+
+test('batchExecuteCapable discriminates the two executor generations', () => {
+  assert.equal(batchExecuteCapable(fakeTools('batch', {})), true)
+  assert.equal(batchExecuteCapable(fakeTools('legacy', {})), false)
+})
+
+test('runMcpAdapter reads BigModel through the batch executor instead of erroring out', async () => {
+  const account = { content: [{ type: 'text', text: JSON.stringify({ basicCustomerInfo: { customerName: 'mpvseed9', balance: 0 } }) }] }
+  const subs = { content: [{ type: 'text', text: JSON.stringify([{ productName: 'GLM Coding Pro', status: 'VALID', valid: '2027-03-28 10:00:00-2028-03-28 10:00:00' }]) }] }
+  let call = 0
+  const tools = {
+    selectExecutor: () => undefined,
+    definitions: () => [],
+    async execute() {
+      call += 1
+      const result = call === 1 ? subs : account
+      return { results: [{ callId: 'c', result: { isError: false, value: result, content: [] } }], additionalContexts: [], concluded: false }
+    },
+  }
+  const snapshot = await runMcpAdapter(tools as never, bigmodel)
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.items, [
+    { label: 'GLM Coding Pro', display: '生效中 · 至 2028-03-28' },
+    { label: '账户余额', display: '¥0' },
+    { label: '账户', display: 'mpvseed9' },
+  ])
+})
+
+test('runMcpAdapter reports a surfacing error instead of a fake ok row', async () => {
+  const tools = fakeTools('batch', { isError: true, error: { message: 'Tool batch execution failed' }, content: [] })
+  const snapshot = await runMcpAdapter(tools as never, bigmodel)
+  assert.equal(snapshot.status, 'error')
+  assert.equal(snapshot.message, 'Tool batch execution failed')
 })

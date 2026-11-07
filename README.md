@@ -54,6 +54,8 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 > **智谱 BigModel 的登录态会自己续上**：该 MCP 服务器（`bigmodel-mcp`）能从本机 Chrome / Edge / Brave 的 `bigmodel_token_production` cookie 解出 JWT。面板刷新时若上游回「登录状态已过期」（code 401），它会自动重取浏览器里的新 token、写回会话文件并**重试一次**，所以你在浏览器里重新登录 open.bigmodel.cn 后，点一下刷新（或等自动轮询）就恢复，不用重启 dsh、也不用手动粘贴 cookie。
 
+**MCP 平台行兼容 DSH 0.2.1 与 0.2.2 两种 `ctx.tools.execute` 形态**：0.2.2 把 `execute({callId,name,arguments})` 换成了整批 `execute({calls,signal})` 并把调度交给所选执行器；把旧的单调用形状发给 0.2.2 会在任何工具体运行前就被批调度器拒掉（`ToolBatchExecutionError: Tool batch execution failed`，原因是 `input.calls.map` 读不到）。Host 半边因此按运行时能力分派：存在 `selectExecutor`/`definitions`（0.2.2 起才有）就走单元素批，否则退回旧单调用；两条路都归一化成同一种结果，旧版 dsh 上行为不变。
+
 **智谱余额用 API key 就能查，不需要登录态**：`智谱 Coding Plan` 卡（API key 直连）除了 5 小时/周窗口与搜索额度，还会显示**账户余额、累计消费**——走 `GET https://open.bigmodel.cn/api/biz/account/query-customer-account-report`（`Authorization: Bearer <key>`，返回 `balance/availableBalance/rechargeAmount/giveAmount/totalSpendAmount/frozenBalance`）。注意智谱把控制台接口也放在 `/api/biz/*` 下，但权限不同：`/api/biz/customer/accountSet`、`/api/biz/customer/getCustomerInfo` 对 API key 返回 `403 APIKey not allow access`（那才是 MCP 登录行存在的原因）；余额、订阅列表 `/api/biz/subscription/list`、资源包 `/api/biz/tokenAccounts/list/my`、用量 `/api/monitor/usage/model-usage` 都对 API key 开放。附加行取不到（403/超时）只会少一行，不会把卡片变成错误。
 
 **平台来源以 DSH 系统配置为准**：MCP 平台行只在 **DSH composition（profile 的 `cordis.yml` / `cordis.patch.yml`）声明了对应的 `@deepseek-ai/dsh-mcp-client` 条目**时才创建——Host 半边通过 cordis loader 服务读取真实的 entry 树，而不是看项目里的 `.mcp.json`、也不是"恰好存在同名工具"；composition 里删掉条目（并重启 dsh）后，对应平台立即从面板消失。loader 服务不可用的旧版本上自动退回"工具注册表探测"。
