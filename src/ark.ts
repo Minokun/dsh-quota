@@ -28,9 +28,13 @@ import { createHash, createHmac } from 'node:crypto'
 import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { ProviderSnapshot, QuotaItem } from './config.ts'
+import { ARK_PLATFORM_ID } from './platform-map.ts'
 
-/** 面板平台 id：额度行与 `/models` 探活兜底行共用，保证不会重复。 */
-export const ARK_PLATFORM_ID = 'volcark'
+/**
+ * 面板平台 id：额度行与 `/models` 探活兜底行共用，保证不会重复。
+ * 定义在零依赖的 platform-map.ts（浏览器半边也要用），这里再导出一次。
+ */
+export { ARK_PLATFORM_ID }
 
 /** 平台展示名（限额行会拼上套餐类型后缀）。 */
 export const ARK_LABEL = '火山方舟'

@@ -132,9 +132,13 @@ export const PANEL_CSS = `
    徽标上），徽标吸收剩余空间并省略，花费预览保持完整。 */
 .dq-session-toggle .dq-provider-name { flex: 0 0 auto; white-space: nowrap; }
 .dq-session-peek {
-  flex: none; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777);
+  flex: 0 1 auto; min-width: 0; max-width: 132px;
+  font-size: 10px; color: var(--dsw-alias-label-tertiary, #777);
   font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
 }
+/* 没有用量数据时的占位行（读取中 / 还没产生用量）：与计费行同一条样式基线。 */
+.dq-provider-key.dq-session-empty { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
 /* 会话徽标是长 provider/model 串：不换行、超长省略，别把折叠行撑成多行。 */
 .dq-session-toggle .dq-badge {
   flex: 1 1 auto; min-width: 0; max-width: 150px;

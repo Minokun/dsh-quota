@@ -21,6 +21,7 @@ import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-fil
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 import { fetchSubscriptionRows } from './subscription.ts'
 import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
+import { platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
@@ -95,32 +96,14 @@ export interface LlmProviderInfo {
   baseURL?: string
 }
 
-/** Map a model-provider id (llm-pi-ai) onto a quota platform id. */
-export function platformForProvider(provider: string): string {
-  const p = provider.toLowerCase()
-  if (p.includes('kimi')) return 'kimi'
-  if (p.includes('deepseek')) return 'deepseek'
-  if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
-  if (p.includes('zai')) return 'zhipu'
-  if (p.includes('bigmodel')) return 'bigmodel'
-  if (p.includes('qwen') || p.includes('dashscope')) return 'qianwen' // 注意：不带 'bailian'——自定义 bailian 供应商常是别人的 key，映射到自己账号的 MCP 行会显示错账号
-  if (p.includes('scnet')) return 'scnet'
-  if (p.includes('tokenrouter')) return 'tokenrouter'
-  if (p.includes('moonshot')) return 'moonshot'
-  if (p.includes('openrouter')) return 'openrouter'
-  if (p.includes('siliconflow')) return 'siliconflow'
-  if (p.includes('minimax')) return 'minimax'
-  if (p.includes('step')) return 'stepfun'
-  if (p.includes('xai') || p.includes('grok')) return 'xai'
-  if (p.includes('opendesign') || p.includes('open-design')) return 'opendesign'
-  if (p.includes('opencode')) return 'opencode-go'
-  if (p.includes('openai')) return 'openai-admin'
-  if (p.includes('anthropic') || p.includes('claude')) return 'anthropic-admin'
-  // 火山方舟：供应商 id 就是 ark；别把 'ark' 写成 includes 匹配（会误伤
-  // 其它含 ark 的 id），只用精确 id + 厂商常见写法。
-  if (p === 'ark' || p.includes('volc') || p.includes('doubao')) return ARK_PLATFORM_ID
-  return ''
-}
+/**
+ * Map a model-provider id (llm-pi-ai) onto a quota platform id.
+ *
+ * 唯一真表在 `platform-map.ts`：浏览器半边也要用它认领「当前在用」的卡片，
+ * 各存一份副本曾导致 `ark → volcark` 只加在 Host 这一侧，面板置顶静默失效。
+ * 这里 import 进来本地用，同时原样再导出（调用方与测试都不用改）。
+ */
+export { platformForProvider }
 
 /** One credential ref a DSH model provider adds on top of a platform's catalog refs. */
 export interface PlatformRefHint {

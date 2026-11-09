@@ -18,7 +18,8 @@ import { summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace
 import { orderProviders, providerRowOf } from './panel-order.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
 import { formatEtaSpan } from './usage-alerts.ts'
-import { visibleSessionIdOf, sessionTokenUsageOf, type TokenUsageView } from './session-model.ts'
+import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
+import { sessionCardNote, sessionCardVisible, sessionUsageRows, sessionUsageTotal } from './session-card.ts'
 import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
 import { billingLine } from './billing-line.ts'
 import { sparklinePoints } from './sparkline.ts'
@@ -121,16 +122,6 @@ function etaText(minutes: number, t: TFn): string {
   return t('eta.days', { n: (minutes / 1440).toFixed(1) })
 }
 
-/** 本会话卡片的桶行（label locale key + token 数）。缓存写恒为 0（DeepSeek
- * 无此计费桶，dsh 投影恒为 0），不再单独成行——其费用已并入输入侧估算。 */
-function usageRowValues(u: TokenUsageView): Array<{ key: 'session.card.input' | 'session.card.cacheRead' | 'session.card.output'; value: number }> {
-  return [
-    { key: 'session.card.input', value: u.uncachedInputTokens },
-    { key: 'session.card.cacheRead', value: u.cacheReadTokens },
-    { key: 'session.card.output', value: u.outputTokens },
-  ]
-}
-
 /** localStorage key for the floater shape: 药丸 pill / 悬浮环 ring. */
 const MODE_KEY = 'dsh-quota:pill-mode'
 type FloaterMode = 'pill' | 'ring'
@@ -203,13 +194,20 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
   // ── 本会话 token 用量卡片数据 ───────────────────────────────────
-  // 四桶之和 > 0 才渲染；成本估算只在价格表命中（四桶单价齐全）时给出，
-  // 否则只显示 token 计数（estimateSessionCost 返回 undefined）。
-  const usageRows = tokenUsage ? usageRowValues(tokenUsage) : []
-  const usageTotal = usageRows.reduce((sum, r) => sum + r.value, 0)
-  const showUsageCard = usageTotal > 0
+  // 卡片可见性只看「屏幕上有没有会话」：以前绑在「四桶之和 > 0」上，新会话 /
+  // 投影还没下发的那一帧会让整条可折叠的 token 记录凭空消失（用户报的
+  // 「顶上那个 token 记录没了」正是它）。没有用量时给占位文案，而不是抽掉卡片。
+  // 成本估算只在价格表命中（四桶单价齐全）时给出，否则只显示 token 计数
+  // （estimateSessionCost 返回 undefined）。
+  const usageRows = sessionUsageRows(tokenUsage)
+  const showUsageCard = sessionCardVisible(
+    currentSessionId !== undefined || state.sessionModel !== null,
+    tokenUsage,
+  )
+  const sessionNote = sessionCardNote(tokenUsage)
   const sessionModelLabel = state.sessionModel ? `${state.sessionModel.provider}/${state.sessionModel.model}` : ''
-  const usageCost = showUsageCard
+  // 成本估算按四桶总量判断（含不成行的缓存写），不是只按显示出来的三行。
+  const usageCost = sessionUsageTotal(tokenUsage) > 0
     ? estimateSessionCost(state.sessionModel?.model ?? state.currentModel.model, tokenUsage!)
     : undefined
   // 成本文案（有价格才生成）。
@@ -342,6 +340,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // 目标落在根元素（悬浮球 + 面板 + toast）之外就关闭。悬浮球在根元素内，
   // 其 click 切换逻辑不受影响。
   const rootRef = useRef<HTMLDivElement | null>(null)
+  /** 面板滚动容器：换会话时把滚动位置归零（见下面的 effect）。 */
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  // 换会话 / 重新打开面板时把列表滚回顶部。头部是 sticky 的，滚动位置残留会
+  // 把第一张卡（本会话用量）压在头部下面——看起来就像那张卡不见了。
+  useEffect(() => {
+    const el = panelRef.current
+    if (el) el.scrollTop = 0
+  }, [currentSessionId, state.open])
   useEffect(() => {
     if (!state.open) return
     const onDown = (e: PointerEvent): void => {
@@ -444,7 +450,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
         </div>
       ))}
       {state.open && (
-        <div className="dq-panel">
+        <div className="dq-panel" ref={panelRef}>
           <div className="dq-panel-head">
             <span className="dq-panel-title">{t('panel.title')}</span>
             {alerts > 0 && (
@@ -474,21 +480,36 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   <span className="dq-keys-caret">{sessionOpen ? '▾' : '▸'}</span>
                   <span className="dq-provider-name">{t('session.card.title')}</span>
                   {sessionModelLabel && <span className="dq-badge dq-badge--api">{sessionModelLabel}</span>}
-                  {!sessionOpen && usageCost && (
-                    <span className="dq-session-peek">{costText}</span>
-                  )}
+                  {!sessionOpen && (usageCost
+                    ? <span className="dq-session-peek" title={costText}>{costText}</span>
+                    : sessionNote !== '' && (
+                      <span
+                        className="dq-session-peek"
+                        title={t(sessionNote === 'pending' ? 'session.card.pending' : 'session.card.empty')}
+                      >
+                        {t(sessionNote === 'pending' ? 'session.card.pending.short' : 'session.card.empty.short')}
+                      </span>
+                    ))}
                 </button>
                 {sessionOpen && (
                   <>
-                    <div className="dq-items">
-                      {usageRows.map((row) => (
-                        <div key={row.key} className="dq-item">
-                          <span className="dq-item-label">{t(row.key)}</span>
-                          <span className="dq-item-bar" style={{ background: 'transparent' }} />
-                          <span className="dq-item-value">{formatTokens(row.value)}</span>
+                    {usageRows.length > 0
+                      ? (
+                        <div className="dq-items">
+                          {usageRows.map((row) => (
+                            <div key={row.key} className="dq-item">
+                              <span className="dq-item-label">{t(row.key)}</span>
+                              <span className="dq-item-bar" style={{ background: 'transparent' }} />
+                              <span className="dq-item-value">{formatTokens(row.value)}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      )
+                      : (
+                        <span className="dq-provider-key dq-session-empty">
+                          {t(sessionNote === 'pending' ? 'session.card.pending' : 'session.card.empty')}
+                        </span>
+                      )}
                     {usageCost && (
                       <span className="dq-provider-key" title={costText}>
                         {costText}

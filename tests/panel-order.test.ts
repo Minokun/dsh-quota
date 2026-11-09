@@ -54,6 +54,16 @@ test('orderProviders: an unresolved platform leaves the order untouched (and nev
   assert.deepEqual(ROWS.map((p) => p.id), ['kimi', 'deepseek', 'zhipu', 'qianwen'])
 })
 
+test('orderProviders: the 火山方舟 row is pinned for an ark session (keyRefs differ)', () => {
+  // 真实快照里的形状：供应商 ark 的 apiKeyEnv 是 ARK_API_KEY，而面板行
+  // volcark 的 keyRef 是 VOLC_ACCESS_KEY_ID（额度走 AK/SK 控制面），所以
+  // keyRef 精确匹配必然落空，只能靠 provider id 映射认领——客户端那份映射
+  // 曾经缺 ark 规则，于是这张卡永远排不到最前。
+  const rows = [row('kimi', 'KIMI_CODING_API_KEY'), row('volcark', 'VOLC_ACCESS_KEY_ID'), row('opendesign', 'OPENDESIGN_CONTROL_KEY')]
+  const refs = { ark: 'ARK_API_KEY', 'kimi-coding': 'KIMI_CODING_API_KEY', opendesign: 'OPENDESIGN_API_KEY' }
+  assert.deepEqual(orderProviders(rows, 'ark', refs).map((p) => p.id), ['volcark', 'kimi', 'opendesign'])
+})
+
 test('orderProviders: multi-account platform pins only the exact-ref row', () => {
   const rows = [row('deepseek', 'DEEPSEEK_API_KEY_A'), row('deepseek#2', 'DEEPSEEK_API_KEY_B'), row('kimi')]
   const ordered = orderProviders(rows, 'deepseek-b', { 'deepseek-b': 'DEEPSEEK_API_KEY_B' })
