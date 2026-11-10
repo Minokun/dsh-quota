@@ -208,6 +208,25 @@ test('zhipu adapter still reads TOKENS_LIMIT windows', async () => {
   assert.equal(snapshot.items[0]?.percent, 76)
 })
 
+test('zhipu adapter derives the percentage text when upstream omits percentage', async () => {
+  // 上游偶尔只给 currentValue/usage，不给 percentage。此时 display 必须用
+  // 兜底算出来的百分比，不能退化成「已用 ?%」。
+  globalThis.fetch = (async () => jsonResponse({
+    code: 200,
+    data: {
+      limits: [
+        { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 12000, currentValue: 9132, remaining: 2867 },
+      ],
+    },
+  })) as typeof fetch
+
+  const snapshot = await zhipu.fetch('secret')
+
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.items[0]?.percent, 76.1)
+  assert.equal(snapshot.items[0]?.display, '已用 76%')
+})
+
 const minimax = CATALOG_EXTRA.find((a) => a.id === 'minimax-cn')!
 
 test('minimax adapter reports the 5h window and the weekly window', async () => {

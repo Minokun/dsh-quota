@@ -177,13 +177,16 @@ const zaiCoding: FormatParser = (body) => {
     const percentage = num(l.percentage)
     const used = num(l.currentValue)
     const limit = num(l.usage)
+    // percentage 优先；缺失时用 currentValue/usage 兜底。display 必须跟着同一个
+    // 值走，否则会出现进度条 76% 而文字写「已用 ?%」的自相矛盾渲染。
+    const percent = percentage ?? pct(used, limit)
     items.push({
       label,
       used,
       limit,
       remaining: num(l.remaining) ?? (used !== undefined && limit !== undefined ? limit - used : undefined),
-      percent: percentage ?? pct(used, limit),
-      display: `已用 ${percentage ?? '?'}%`,
+      percent,
+      display: `已用 ${percentage !== undefined ? percentage : percent !== undefined ? Math.round(percent) : '?'}%`,
       resetAt: isoFromMs(l.nextResetTime),
     })
   }
