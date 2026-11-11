@@ -6,6 +6,8 @@
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { ackAll, deserializeAlertAckState, pruneAcks, serializeAlertAckState, type AlertAckState } from './alert-ack.ts'
+import { alertIdentities } from './alerts.ts'
 import { browserLang, translate, type Lang } from './locale.ts'
 import { trendValues } from './sparkline.ts'
 import { createUsageAlertState, deserializeUsageAlertState, evaluateUsageAlerts, serializeUsageAlertState, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
@@ -167,6 +169,8 @@ export interface QuotaPanelState {
   usageAlerts: UsageAlert[]
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
+  /** 已读告警（alert key → 已读时的条件签名，见 alert-ack.ts）：命中的不再计入红点。 */
+  ackedAlerts: AlertAckState
   /** 正在测活的平台 id。 */
   probing: string
   /** 平台 id → 最近一次测活结果（延迟/错误）。 */
@@ -206,6 +210,8 @@ export interface QuotaPanelFace {
   probe(platform: string): void
   /** Persist the manual card order (平台组 key 序列，见 panel-order.ts). */
   setProviderOrder(order: string[]): void
+  /** 把当前红点告警全部标为已读（条件不变就不再计数，窗口重置后自动恢复）。 */
+  ackAlerts(): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -236,6 +242,7 @@ const INITIAL: QuotaPanelState = {
   usageAlerts: [],
   trends: {},
   alertPercent: 85,
+  ackedAlerts: loadAlertAcks(),
   probing: '',
   probeResults: {},
   lang: browserLang(),
@@ -365,6 +372,7 @@ export class QuotaPanelController {
       dismissUsageAlert: (key) => { this.dismissUsageAlert(key) },
       probe: (platform) => { void this.probe(platform) },
       setProviderOrder: (order) => { void this.setProviderOrder(order) },
+      ackAlerts: () => { this.ackAlerts() },
     }
   }
 
@@ -397,6 +405,7 @@ export class QuotaPanelController {
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
       this.updateUsageAlerts(state.providers, state.alertPercent ?? 85)
+      this.pruneAlertAcks()
     } catch {
       this.patch({ loaded: true, formError: translate(this.lang(), 'error.readStatus') })
     }
@@ -446,6 +455,26 @@ export class QuotaPanelController {
   private dismissUsageAlert(key: string): void {
     const snap = this.store.getSnapshot()
     this.patch({ usageAlerts: snap.usageAlerts.filter((a) => a.key !== key) })
+  }
+
+  /** 把当前红点告警全部标为已读；条件不变就不再计入红点。 */
+  private ackAlerts(): void {
+    const snap = this.store.getSnapshot()
+    const next = ackAll(alertIdentities(snap))
+    saveAlertAcks(next)
+    this.patch({ ackedAlerts: next })
+  }
+
+  /**
+   * 清掉已经消失的告警的已读记录：告警消失（平台恢复 / 条目回落 / 窗口
+   * 重置）后再出现时重新变回未读。没有变化则不写盘、不重渲染。
+   */
+  private pruneAlertAcks(): void {
+    const snap = this.store.getSnapshot()
+    const next = pruneAcks(snap.ackedAlerts, alertIdentities(snap))
+    if (next === undefined) return
+    saveAlertAcks(next)
+    this.patch({ ackedAlerts: next })
   }
 
   /** One-shot connectivity probe: latency on success, upstream error on failure. */
@@ -574,6 +603,7 @@ export class QuotaPanelController {
         providers: state.providers,
       })
       this.updateUsageAlerts(state.providers, this.store.getSnapshot().alertPercent)
+      this.pruneAlertAcks()
     })
   }
 
@@ -654,6 +684,8 @@ async function request<T>(path: string, body: Record<string, unknown> | undefine
 
 /** localStorage key for the once-per-window usage-alert state. */
 const USAGE_ALERT_STORE_KEY = 'dsh-quota:usage-alerts'
+/** localStorage key for the acked (read) alerts — the red badge stays quiet. */
+const ALERT_ACK_STORE_KEY = 'dsh-quota:alert-acks'
 /** 用量提醒 toast 的自动收起时长：条件仍满足也收起（不会重弹，窗口内只提醒一次）。 */
 const ALERT_VISIBLE_MS = 10 * 60 * 1000
 
@@ -672,5 +704,22 @@ function loadUsageAlertState(): UsageAlertState {
 function saveUsageAlertState(state: UsageAlertState): void {
   try {
     window.localStorage.setItem(USAGE_ALERT_STORE_KEY, serializeUsageAlertState(state))
+  } catch { /* 隐私模式等 localStorage 不可用 */ }
+}
+
+/** 读持久化的已读告警；不可用 / 损坏时回退空白状态（最坏情况多显示一次红点）。 */
+function loadAlertAcks(): AlertAckState {
+  try {
+    const raw = window.localStorage.getItem(ALERT_ACK_STORE_KEY)
+    return raw === null ? {} : (deserializeAlertAckState(raw) ?? {})
+  } catch {
+    return {} // 隐私模式等 localStorage 不可用
+  }
+}
+
+/** 把已读告警写回 localStorage（失败静默：本次运行内仍然生效）。 */
+function saveAlertAcks(state: AlertAckState): void {
+  try {
+    window.localStorage.setItem(ALERT_ACK_STORE_KEY, serializeAlertAckState(state))
   } catch { /* 隐私模式等 localStorage 不可用 */ }
 }

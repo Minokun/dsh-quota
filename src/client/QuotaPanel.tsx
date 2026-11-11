@@ -388,8 +388,23 @@ export function QuotaPanel(props: QuotaPanelProps) {
     return () => { document.removeEventListener('pointerdown', onDown, true) }
   }, [state.open])
 
-  // 红点告警 Badge（两种形态共用）。
-  const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
+  // 红点告警 Badge（两种形态共用）。点红点 = 标为已读（红点消失，
+  // 条件不变就不再回来；窗口重置 / 新错误会让它重新亮起）。
+  const badge = alerts > 0 && (
+    <span
+      className="dq-alert"
+      role="button"
+      tabIndex={0}
+      title={t('alert.ack')}
+      onClick={(e) => { e.stopPropagation(); props.ackAlerts() }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        e.stopPropagation()
+        props.ackAlerts()
+      }}
+    >{alerts > 99 ? '99+' : alerts}</span>
+  )
 
   const dragHandlers = {
     onPointerDown: onPillPointerDown,
@@ -484,7 +499,12 @@ export function QuotaPanel(props: QuotaPanelProps) {
           <div className="dq-panel-head">
             <span className="dq-panel-title">{t('panel.title')}</span>
             {alerts > 0 && (
-              <span className="dq-panel-alert" title={alertTexts.join('\n')}>{t('panel.alerts', { n: alerts })}</span>
+              <button
+                type="button"
+                className="dq-panel-alert"
+                title={`${alertTexts.join('\n')}\n${t('alert.ack')}`}
+                onClick={() => { props.ackAlerts() }}
+              >{t('panel.alerts', { n: alerts })}</button>
             )}
             <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
               {mode === 'pill' ? '◯' : '▬'}
