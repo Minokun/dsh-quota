@@ -94,6 +94,12 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
         await quota.removeHttpPlatform(id)
         return send(res, 200, { ok: true, httpPlatforms: quota.state().httpPlatforms })
       }
+      if (path === '/order') {
+        // 手动排序：客户端按「平台组 key」回传整份顺序；Host 只清洗+落盘。
+        const body = await readJson(req)
+        await quota.setProviderOrder(stringArrayField(body, 'order'))
+        return send(res, 200, { ok: true, providerOrder: quota.state().providerOrder })
+      }
     }
     send(res, 404, { error: 'unknown route' })
   } catch (error) {
@@ -129,4 +135,21 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
 function numberField(body: Record<string, unknown>, key: string): number | undefined {
   const v = body[key]
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/**
+ * 字符串数组字段：非字符串项直接丢掉（客户端可能回传被篡改的 payload），
+ * 去空白、去空串、保序去重。真正的长度上限由 controller 再兜一次。
+ */
+function stringArrayField(body: Record<string, unknown>, key: string): string[] {
+  const v = body[key]
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const item of v) {
+    if (typeof item !== 'string') continue
+    const trimmed = item.trim()
+    if (trimmed === '' || out.includes(trimmed)) continue
+    out.push(trimmed)
+  }
+  return out
 }

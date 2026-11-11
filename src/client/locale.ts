@@ -36,6 +36,11 @@ const zh = {
   'panel.footer.never': '尚未刷新',
   'mode.toRing': '切换为悬浮环',
   'mode.toPill': '切换为药丸',
+  'order.toggle': '排序',
+  'order.on': '完成',
+  'order.hint': '▲▼ 调整卡片顺序，自动保存；「当前在用」的平台不再自动置顶',
+  'order.up': '上移',
+  'order.down': '下移',
 
   'status.ok': '正常',
   'status.error': '失败',
@@ -128,6 +133,7 @@ const zh = {
   'error.newapiUserId': 'NewAPI 用户 ID 必须是正整数',
   'error.newapiQuotaPerUnit': 'NewAPI 每美元额度点必须是正数',
   'error.keyEmpty': 'key 不能为空',
+  'error.saveOrder': '保存排序失败，已恢复为上一次的顺序',
   'error.requestFailed': '插件请求失败（HTTP {status}）',
 } as const
 
@@ -157,6 +163,11 @@ const en: Record<LocaleKey, string> = {
   'panel.footer.never': 'Not refreshed yet',
   'mode.toRing': 'Switch to ring',
   'mode.toPill': 'Switch to pill',
+  'order.toggle': 'Order',
+  'order.on': 'Done',
+  'order.hint': '▲▼ reorders the cards and saves automatically; the "in use" platform stops jumping to the top',
+  'order.up': 'Move up',
+  'order.down': 'Move down',
 
   'status.ok': 'OK',
   'status.error': 'Failed',
@@ -249,6 +260,7 @@ const en: Record<LocaleKey, string> = {
   'error.newapiUserId': 'NewAPI user ID must be a positive integer',
   'error.newapiQuotaPerUnit': 'NewAPI quota units per USD must be positive',
   'error.keyEmpty': 'key must not be empty',
+  'error.saveOrder': 'Could not save the order — reverted to the previous layout',
   'error.requestFailed': 'Plugin request failed (HTTP {status})',
 }
 
