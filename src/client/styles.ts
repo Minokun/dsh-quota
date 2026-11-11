@@ -156,6 +156,9 @@ export const PANEL_CSS = `
 .dq-badge--api { background: rgba(91, 108, 255, 0.14); color: #5b6cff; }
 .dq-badge--mcp { background: rgba(0, 180, 216, 0.14); color: #00b4d8; }
 .dq-probe { padding: 2px 8px; font-size: 11px; flex: none; }
+/* 排序模式：▲▼ 两个小按钮挤在卡片标题行里，不抢名字的空间。 */
+.dq-order-btns { display: inline-flex; gap: 2px; flex: none; }
+.dq-order { padding: 0 5px; font-size: 10px; line-height: 1.5; flex: none; }
 .dq-probe-result { font-size: 10px; font-variant-numeric: tabular-nums; word-break: break-all; }
 .dq-probe-result--ok { color: #3ddc84; }
 .dq-probe-result--err { color: #e74c3c; }

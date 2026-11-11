@@ -159,6 +159,8 @@ export interface QuotaPanelState {
   keyPlatforms: Array<{ id: string; label: string }>
   /** DSH 模型供应商 id → apiKeyEnv（host 下发，pill 精确对应卡片）。 */
   providerKeyRefs: Record<string, string>
+  /** 用户手动排的面板卡片顺序（平台组 key，见 panel-order.ts；空 = 未手动排序）。 */
+  providerOrder: string[]
   /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量告警（悬浮球 toast：越阈值跨越 + 预计耗尽，见 usage-alerts.ts）。 */
@@ -202,6 +204,8 @@ export interface QuotaPanelFace {
   dismissUsageAlert(key: string): void
   /** Run a one-shot connectivity probe for one platform card. */
   probe(platform: string): void
+  /** Persist the manual card order (平台组 key 序列，见 panel-order.ts). */
+  setProviderOrder(order: string[]): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -227,6 +231,7 @@ const INITIAL: QuotaPanelState = {
   loginPending: '',
   keyPlatforms: [],
   providerKeyRefs: {},
+  providerOrder: [],
   loginAlerts: [],
   usageAlerts: [],
   trends: {},
@@ -359,13 +364,14 @@ export class QuotaPanelController {
       dismissLogin: (platform) => { this.dismissLogin(platform) },
       dismissUsageAlert: (key) => { this.dismissUsageAlert(key) },
       probe: (platform) => { void this.probe(platform) },
+      setProviderOrder: (order) => { void this.setProviderOrder(order) },
     }
   }
 
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
       // /status 本就携带 history（host 时序采样），这里裁成每条目最近 30 个
       // 采样值存入 trends，供面板条目的 sparkline 使用。
       const trends: Record<string, number[]> = {}
@@ -384,6 +390,7 @@ export class QuotaPanelController {
         loginFlows: state.loginFlows ?? {},
         keyPlatforms: state.keyPlatforms ?? [],
         providerKeyRefs: state.providerKeyRefs ?? {},
+        providerOrder: state.providerOrder ?? [],
         alertPercent: state.alertPercent ?? 85,
         trends,
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
@@ -456,6 +463,26 @@ export class QuotaPanelController {
       })
     } finally {
       this.patch({ probing: '' })
+    }
+  }
+
+  /**
+   * 手动排序：先乐观更新本地快照（面板立刻重排），再 POST /order 落盘；
+   * 失败回退到上一份顺序并把错误挂在 formError 上。
+   */
+  private async setProviderOrder(order: string[]): Promise<void> {
+    const previous = this.store.getSnapshot().providerOrder
+    this.patch({ providerOrder: order, formError: '' })
+    try {
+      const result = await request<{ ok?: boolean; providerOrder?: string[] }>('/order', { order }, this.lang())
+      if (result.providerOrder) this.patch({ providerOrder: result.providerOrder })
+    } catch (error) {
+      this.patch({
+        providerOrder: previous,
+        formError: error instanceof Error && error.message
+          ? error.message
+          : translate(this.lang(), 'error.saveOrder'),
+      })
     }
   }
 
