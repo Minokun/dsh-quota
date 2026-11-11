@@ -28,10 +28,12 @@ export const PANEL_CSS = `
 .dq-pill .dq-pill-name { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dq-pill { position: relative; }
 
-/* 红点告警 Badge：失败平台 + 越阈值条目 + 登录失效提醒的合计数量。 */
-/* 头部告警角标：与「N/N 平台正常」并列，说明红点的构成。 */
+/* 红点告警 Badge：失败平台 + 越阈值条目 + 登录失效提醒的合计数量。
+   可点击（标为已读），所以不再 pointer-events: none。 */
+/* 头部告警角标：与「N/N 平台正常」并列，可点击标为已读。 */
 .dq-panel-alert {
-  font-size: 11px; font-weight: 600; color: #e74c3c; cursor: help;
+  font-size: 11px; font-weight: 600; color: #e74c3c; cursor: pointer;
+  border: none; background: none; padding: 0; font-family: inherit;
 }
 
 .dq-alert {
@@ -40,7 +42,7 @@ export const PANEL_CSS = `
   display: inline-flex; align-items: center; justify-content: center;
   background: #e74c3c; color: #fff; font-size: 10px; font-weight: 700; line-height: 1;
   box-shadow: 0 0 0 2px var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92));
-  animation: dq-alert-pulse 2s ease-in-out infinite; pointer-events: none;
+  animation: dq-alert-pulse 2s ease-in-out infinite; pointer-events: auto; cursor: pointer;
 }
 @keyframes dq-alert-pulse {
   0%, 100% { transform: scale(1); }
@@ -85,17 +87,26 @@ export const PANEL_CSS = `
 }
 
 .dq-panel {
-  width: 340px; max-height: min(64vh, 600px); overflow-y: auto; border-radius: 14px;
+  /* 面板宽度随视口收缩：窄窗口 / 分屏下不再比窗口还宽。 */
+  width: min(340px, calc(100vw - 24px)); max-height: min(64vh, 600px); overflow-y: auto; border-radius: 14px;
   background: var(--dsw-alias-bg-layer-2, rgba(22, 22, 30, 0.97)); color: var(--dsw-alias-label-primary, #eee);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
   display: flex; flex-direction: column;
 }
-.dq-panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2)); position: sticky; top: 0; background: inherit; border-radius: 14px 14px 0 0; }
-/* 头部：标题/告警/按钮都不换行（中文单字换行会竖排），平台计数挪到 footer。 */
-.dq-panel-title { font-weight: 600; font-size: 14px; flex: 1; white-space: nowrap; }
+/* 头部：标题/告警一组、操作按钮一组；放不下时操作组整体换到第二行并
+   右对齐，按钮再多也不会把内容挤出面板。 */
+.dq-panel-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 6px;
+  padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2));
+  position: sticky; top: 0; background: inherit; border-radius: 14px 14px 0 0;
+}
+.dq-panel-headline { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.dq-panel-actions { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.dq-panel-title { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dq-panel-alert { white-space: nowrap; flex: none; }
-.dq-panel-head .dq-btn { flex: none; white-space: nowrap; }
+.dq-panel-head .dq-btn { flex: none; white-space: nowrap; padding: 5px 8px; }
+.dq-panel-close { padding: 5px 7px; }
 .dq-btn {
   padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 500; border: none; cursor: pointer;
   background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.15)); color: var(--dsw-alias-label-primary, #eee);
@@ -156,6 +167,9 @@ export const PANEL_CSS = `
 .dq-badge--api { background: rgba(91, 108, 255, 0.14); color: #5b6cff; }
 .dq-badge--mcp { background: rgba(0, 180, 216, 0.14); color: #00b4d8; }
 .dq-probe { padding: 2px 8px; font-size: 11px; flex: none; }
+/* 排序模式：▲▼ 两个小按钮挤在卡片标题行里，不抢名字的空间。 */
+.dq-order-btns { display: inline-flex; gap: 2px; flex: none; }
+.dq-order { padding: 0 5px; font-size: 10px; line-height: 1.5; flex: none; }
 .dq-probe-result { font-size: 10px; font-variant-numeric: tabular-nums; word-break: break-all; }
 .dq-probe-result--ok { color: #3ddc84; }
 .dq-probe-result--err { color: #e74c3c; }

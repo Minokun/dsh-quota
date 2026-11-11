@@ -39,6 +39,9 @@ const FAILURE_RETRY_MAX_MS = 240000
 /** 样本落盘节流：刷新默认 5 分钟一轮，磁盘不必跟得那么勤。 */
 const HISTORY_SAVE_MIN_GAP_MS = 60 * 1000
 
+/** 手动排序最多记多少个平台组（防止异常客户端把配置撑大）。 */
+const MAX_PROVIDER_ORDER = 200
+
 /** 网络抖动/限流/5xx 值得当场重试一次；401/403 等鉴权错误重试无意义。 */
 function isTransientFailure(message: string): boolean {
   return !/^HTTP 4\d\d/.test(message) || /^HTTP (408|429)/.test(message)
@@ -252,6 +255,8 @@ export interface QuotaControllerFace {
   addHttpPlatform(platform: CustomHttpPlatform): Promise<void>
   /** Remove one user-declared HTTP platform by id. */
   removeHttpPlatform(id: string): Promise<void>
+  /** Persist the panel's manual card order (platform group keys, see client/panel-order.ts). */
+  setProviderOrder(order: string[]): Promise<void>
   /** Login flows known to the panel: platform id → login page URL. */
   loginUrls(): Record<string, string>
   /** Open a platform's login page (CDP-enabled Chrome when the flow needs cookies). */
@@ -788,6 +793,22 @@ export class QuotaController implements QuotaControllerFace {
   async removeHttpPlatform(id: string): Promise<void> {
     await this.patch({ httpPlatforms: this.state().httpPlatforms.filter((p) => p.id !== id) })
     await this.refresh()
+  }
+
+  /**
+   * Persist the panel's manual card order. 排序发生在客户端（换模型立刻重排，
+   * 不用等 Host 快照），这里只做「存」：清洗掉空白/超长/重复项后落盘。
+   * 不触发刷新——顺序跟额度数据无关。
+   */
+  async setProviderOrder(order: string[]): Promise<void> {
+    const clean: string[] = []
+    for (const raw of order) {
+      const key = raw.trim()
+      if (key === '' || key.length > 120 || clean.includes(key)) continue
+      clean.push(key)
+      if (clean.length >= MAX_PROVIDER_ORDER) break
+    }
+    await this.patch({ providerOrder: clean })
   }
 
   /** Built-in login URLs overridden by config loginFlows. */

@@ -15,7 +15,7 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
-import { orderProviders, providerRowOf } from './panel-order.ts'
+import { orderKey, orderProviders, providerRowOf } from './panel-order.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
 import { formatEtaSpan } from './usage-alerts.ts'
 import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
@@ -42,14 +42,23 @@ const POS_MARGIN = 4
  */
 interface PillPos { x: number; y: number; w: number; h: number }
 
-/** Keep the pill fully inside the viewport. */
+/**
+ * Keep the pill fully inside the viewport. Positions are rounded to whole
+ * pixels: drag coordinates and `getBoundingClientRect()` are fractional, and
+ * a floating widget parked on a half pixel gets composited with subpixel
+ * offsets, which makes the small ring look blurry. Rounding is the only
+ * change here — the widget's size and shape stay exactly as designed.
+ */
 function clampPillPos(p: PillPos): PillPos {
   const vw = window.innerWidth
   const vh = window.innerHeight
+  const w = Math.round(p.w)
+  const h = Math.round(p.h)
   return {
-    ...p,
-    x: Math.min(Math.max(p.x, POS_MARGIN), Math.max(POS_MARGIN, vw - p.w - POS_MARGIN)),
-    y: Math.min(Math.max(p.y, POS_MARGIN), Math.max(POS_MARGIN, vh - p.h - POS_MARGIN)),
+    w,
+    h,
+    x: Math.round(Math.min(Math.max(p.x, POS_MARGIN), Math.max(POS_MARGIN, vw - w - POS_MARGIN))),
+    y: Math.round(Math.min(Math.max(p.y, POS_MARGIN), Math.max(POS_MARGIN, vh - h - POS_MARGIN))),
   }
 }
 
@@ -176,13 +185,40 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // 先按 apiKeyEnv 精确对应（同平台多号也准），再退回名称模糊匹配。
   const rowFor = (provider: string): PanelProvider | undefined =>
     providerRowOf(state.providers, provider, state.providerKeyRefs)
-  // 卡片顺序：当前在用的模型所在平台排第一（紧跟第一行的本会话用量卡片），
-  // 其余平台保持 Host 下发的固定顺序；换模型时顺序实时跟着变。
+  // 卡片顺序：手动顺序（panel-order.ts）> 当前在用平台置顶 > Host 顺序。
+  // 手动顺序里已经排过的平台不再被「换模型」抢位。
   const orderedProviders = orderProviders(
     state.providers,
     state.sessionModel?.provider ?? state.currentModel.provider,
     state.providerKeyRefs,
+    state.providerOrder,
   )
+  // 排序模式下 ▲▼ 调顺序：按「平台组 key」整组移动（同平台多账号/多线路
+  // 保持相邻），乐观更新后由 client controller 落盘。
+  const moveProvider = (id: string, delta: -1 | 1): void => {
+    const keys: string[] = []
+    for (const p of orderedProviders) {
+      const key = orderKey(p.id)
+      if (!keys.includes(key)) keys.push(key)
+    }
+    const from = keys.indexOf(orderKey(id))
+    const to = from + delta
+    if (from < 0 || to < 0 || to >= keys.length) return
+    const [moved] = keys.splice(from, 1)
+    keys.splice(to, 0, moved!)
+    props.setProviderOrder(keys)
+  }
+  /** 当前行所在组在排序列表里的位置（首/尾时禁用相应按钮）。 */
+  const orderIndexOf = (id: string): number => {
+    const key = orderKey(id)
+    const keys: string[] = []
+    for (const p of orderedProviders) {
+      const k = orderKey(p.id)
+      if (!keys.includes(k)) keys.push(k)
+    }
+    return keys.indexOf(key)
+  }
+  const orderKeyCount = new Set(orderedProviders.map((p) => orderKey(p.id))).size
   const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider), state.lang) : ''
   // 默认模型的摘要同样在本地按当前语言拼（host 下发的 summary 文案固定中文）。
   const defaultSummary = summarizeItems(rowFor(state.currentModel.provider), state.lang)
@@ -230,6 +266,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
     setMode(next)
     try { window.localStorage.setItem(MODE_KEY, next) } catch { /* private mode */ }
   }
+
+  // ── 排序模式：面板里直接调卡片顺序（▲▼，改动即时落盘）──────────────
+  const [orderMode, setOrderMode] = useState(false)
 
   // ── 本会话卡片：收/展状态（默认收起，localStorage 记住手动展开）────────
   const [sessionOpen, setSessionOpen] = useState(() => (typeof window === 'undefined' ? false : loadSessionOpen()))
@@ -358,8 +397,23 @@ export function QuotaPanel(props: QuotaPanelProps) {
     return () => { document.removeEventListener('pointerdown', onDown, true) }
   }, [state.open])
 
-  // 红点告警 Badge（两种形态共用）。
-  const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
+  // 红点告警 Badge（两种形态共用）。点红点 = 标为已读（红点消失，
+  // 条件不变就不再回来；窗口重置 / 新错误会让它重新亮起）。
+  const badge = alerts > 0 && (
+    <span
+      className="dq-alert"
+      role="button"
+      tabIndex={0}
+      title={t('alert.ack')}
+      onClick={(e) => { e.stopPropagation(); props.ackAlerts() }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        e.stopPropagation()
+        props.ackAlerts()
+      }}
+    >{alerts > 99 ? '99+' : alerts}</span>
+  )
 
   const dragHandlers = {
     onPointerDown: onPillPointerDown,
@@ -452,17 +506,35 @@ export function QuotaPanel(props: QuotaPanelProps) {
       {state.open && (
         <div className="dq-panel" ref={panelRef}>
           <div className="dq-panel-head">
-            <span className="dq-panel-title">{t('panel.title')}</span>
-            {alerts > 0 && (
-              <span className="dq-panel-alert" title={alertTexts.join('\n')}>{t('panel.alerts', { n: alerts })}</span>
-            )}
-            <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
-              {mode === 'pill' ? '◯' : '▬'}
-            </button>
-            <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
-              {busy ? t('panel.refreshing') : t('panel.refresh')}
-            </button>
-            <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.close() }}>✕</button>
+            <div className="dq-panel-headline">
+              <span className="dq-panel-title">{t('panel.title')}</span>
+              {alerts > 0 && (
+                <button
+                  type="button"
+                  className="dq-panel-alert"
+                  title={`${alertTexts.join('\n')}\n${t('alert.ack')}`}
+                  onClick={() => { props.ackAlerts() }}
+                >{t('panel.alerts', { n: alerts })}</button>
+              )}
+            </div>
+            <div className="dq-panel-actions">
+              <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
+                {mode === 'pill' ? '◯' : '▬'}
+              </button>
+              <button
+                type="button"
+                className={`dq-btn ${orderMode ? 'dq-btn--primary' : 'dq-btn--ghost'}`}
+                title={t('order.hint')}
+                aria-pressed={orderMode}
+                onClick={() => { setOrderMode((v) => !v) }}
+              >
+                {orderMode ? t('order.on') : t('order.toggle')}
+              </button>
+              <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
+                {busy ? t('panel.refreshing') : t('panel.refresh')}
+              </button>
+              <button type="button" className="dq-btn dq-btn--ghost dq-panel-close" title={t('panel.close')} onClick={() => { props.close() }}>✕</button>
+            </div>
           </div>
           <div className="dq-panel-body">
             {state.loaded && state.providers.length === 0 && (
@@ -538,6 +610,24 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   )}
                   {p.via && <span className={`dq-badge ${p.via === 'api' ? 'dq-badge--api' : 'dq-badge--mcp'}`}>{p.via === 'api' ? 'API' : 'MCP'}</span>}
                   <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
+                  {orderMode && (
+                    <span className="dq-order-btns">
+                      <button
+                        type="button"
+                        className="dq-btn dq-btn--ghost dq-order"
+                        title={t('order.up')}
+                        disabled={orderIndexOf(p.id) <= 0}
+                        onClick={() => { moveProvider(p.id, -1) }}
+                      >▲</button>
+                      <button
+                        type="button"
+                        className="dq-btn dq-btn--ghost dq-order"
+                        title={t('order.down')}
+                        disabled={orderIndexOf(p.id) < 0 || orderIndexOf(p.id) >= orderKeyCount - 1}
+                        onClick={() => { moveProvider(p.id, 1) }}
+                      >▼</button>
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="dq-btn dq-btn--ghost dq-probe"
