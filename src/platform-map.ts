@@ -15,6 +15,16 @@
 /** 火山方舟在面板里的平台 id（额度行与 `/models` 探活兜底行共用）。 */
 export const ARK_PLATFORM_ID = 'volcark'
 
+/** Magpie 网关额度行的平台 id 前缀（行 id 形如 `magpie-commandcode`）。 */
+export const MAGPIE_PLATFORM_PREFIX = 'magpie-'
+
+/**
+ * dsh-magpie-connector 的模型供应商前缀：connector 把网关里的每个 owner
+ * （codex / commandcode / opendesign …）注册成一条路由
+ * `dsh-magpie-connector-<owner>`。
+ */
+const MAGPIE_PROVIDER_PREFIX = 'dsh-magpie-connector-'
+
 /**
  * Map a model-provider id onto a quota platform id.
  * @param provider - DSH 模型供应商 id（不区分大小写）。
@@ -22,6 +32,14 @@ export const ARK_PLATFORM_ID = 'volcark'
  */
 export function platformForProvider(provider: string): string {
   const p = provider.toLowerCase()
+  // Magpie 网关优先：connector 注册的路由是 `dsh-magpie-connector-<owner>`，
+  // owner 与网关额度卡片的 provider 字段同名（codex / commandcode / …），
+  // 这样面板能按「当前在用模型」把对应的 magpie 卡置顶。必须排在下面那些
+  // 关键词规则之前——owner 名字里可能含 `opendesign`/`openai` 之类的词。
+  if (p.startsWith(MAGPIE_PROVIDER_PREFIX)) {
+    const owner = p.slice(MAGPIE_PROVIDER_PREFIX.length)
+    return owner ? `${MAGPIE_PLATFORM_PREFIX}${owner}` : ''
+  }
   if (p.includes('kimi')) return 'kimi'
   if (p.includes('deepseek')) return 'deepseek'
   if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'
