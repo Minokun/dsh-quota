@@ -19,6 +19,7 @@ import { QuotaController, type LlmProviderInfo } from './controller.ts'
 import { ALL_DIRECT_REFS } from './direct.ts'
 import { ARK_REFS } from './ark.ts'
 import { configuredMcpServers } from './dsh-config.ts'
+import { MAGPIE_LINE_REF } from './magpie.ts'
 import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
@@ -221,7 +222,9 @@ export function apply(ctx: Context, config: Config): void {
     // 多账号：同平台第二个供应商的 apiKeyEnv（如 DEEPSEEK_B_API_KEY）不在
     // 内置目录里，但同样要触发刷新，否则新加的卡要等下一个周期才出现。
     const providerRef = llmProvidersOf(ctx, settingsForms).some((lp) => lp.keyRef === name)
-    if (!KNOWN_REFS.has(name) && !custom && !providerRef) return
+    // Magpie 线路凭证（`MAGPIE_LINE_<ID>_*`）属于 connector 的配置域，不在
+    // 上面两张表里；换线路 key 时同样要立刻重查网关卡片。
+    if (!KNOWN_REFS.has(name) && !custom && !providerRef && !MAGPIE_LINE_REF.test(name)) return
     if (pending !== undefined) clearTimeout(pending)
     pending = setTimeout(() => {
       pending = undefined

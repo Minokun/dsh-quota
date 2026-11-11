@@ -32,6 +32,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 - **余额型平台的「近 7 天消耗 / 余额还能撑多久」**：余额条目按**日历时间**口径算——近 7 天实测余额降幅 ÷ 跨度（闲置时间也算进分母）得到真实日均，再外推 7 天花费与余额耗尽时间。样本跨度不足 24 小时不显示（几十分钟的活跃速率外推一周会放大 3 倍左右，这正是「日均 ¥20 却被算成 ¥430/周」的来源）；跨度不足 7 天会标注「按 N 天实测折算」
 - **一键测活**：每张卡片右上「测」按钮当场重跑该平台的查询，返回毫秒延迟（`✓ 320ms`）或上游原始错误；只读探测，不改动快照
 - **自定义端点安全校验**：接口地址必须是公网 HTTPS——拒绝内嵌用户名/密码、查询参数、`localhost`/`.local`/`.internal` 与回环/私有/链路本地/保留地址（含 IPv4/IPv6 字面量）；请求拒绝跟随 3xx 跳转、响应超过 256 KiB 直接失败，避免自定义平台被用来探测内网
+- **Magpie 网关同步**：装了 `dsh-magpie-connector` 并配了线路时，直接复用它的线路地址与凭证（`MAGPIE_LINE_<id>_API_KEY`），把网关的额度卡片（窗口 / Credits / 余额）搬进面板——不用在配额插件里再登录一次；同一平台已有网关卡片时本地订阅行自动让位（见「支持的平台」）
 - **中英双语界面**：面板文案跟随 DSH 的语言设置（`ctx.locale` 服务）实时切换，缺失该服务时按浏览器语言自动判定；药丸/悬浮环/面板/错误提示/时间格式全部本地化（en 文案不含中文字符，有单测把关）
 - **红点告警 Badge**：悬浮球/悬浮环右上角红点计数——查询失败的平台 + 用量占比 ≥ `alertPercent`（默认 85，可配置）的条目 + 登录失效提醒，恢复后自动消失
 - **HUD 悬浮环模式**：面板头部一键在「药丸 / 悬浮环」之间切换（localStorage 记住）；悬浮环显示剩余额度环形进度（绿/黄/红三档、平滑动画），焦点跟随当前会话模型，无对应时每 4 秒轮播各平台（悬停暂停）；拖到屏幕左右边缘自动贴边微缩、悬停展开
@@ -49,6 +50,8 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 **火山方舟（Volcengine Ark）**：额度**不在推理 API 上**——`ARK_API_KEY`（`ark-…`）只能调模型，所以 DSH 里只配了它时，卡片只能探活显示「模型服务 在线」，这是设计如此、不是查询失败。套餐用量要走火山引擎**控制面 OpenAPI**（`open.volcengineapi.com`，`GetCodingPlanUsage` / `GetAgentPlanAFPUsage`，HMAC-SHA256 签名），必须用 **AccessKey ID + SecretAccessKey**：在面板底部「API Key 管理」里把两者按 `AK:SK`（或控制台给的合成串 `AK/SK`、整行 `AccessKeyID/SecretAccessKey: …`）填进「火山方舟 (AK/SK)」，插件会自动拆开，或直接写凭证引用 `VOLC_ACCESS_KEY_ID` / `VOLC_ACCESS_KEY_SECRET`（也认 `VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY` 等别名）。AK/SK 建议用 IAM 子用户并只授 `ArkReadOnlyAccess`（只读）；Coding Plan 与 Agent Plan 共用同一对 AK/SK，插件先试 Coding Plan、未订阅时自动落到 Agent Plan。
 
 **国外官方平台（用量/成本口径）**：OpenAI 走组织 Admin API `/v1/organization/costs`（凭证引用 `OPENAI_ADMIN_KEY`，即 `sk-admin-…`），Anthropic 走 Admin `cost_report`（凭证引用 `ANTHROPIC_ADMIN_KEY`，即 `sk-ant-admin…`，请求带 `anthropic-version`、金额单位是「分」已自动换算）。两家都**没有余额查询接口**，卡片展示「今日 / 近 7 天 / 近 30 天消耗」，并在卡片上注明；普通 `sk-*` / 项目 key 会被上游拒绝，不是插件的问题。
+
+**Magpie 网关（dsh-magpie-connector）**：装了 `dsh-magpie-connector` 并在里面配了线路时，面板会直接把该线路的额度卡片拉过来——Codex、Open Design、Command Code 这些走网关的平台不再各自登录/填 key，卡片上的窗口（5 小时 / 周 / Credits）、余额、重置时间由网关统一提供。插件读 connector 自己的 `settings.json`（`$DSH_HOME/plugins/dsh-magpie-connector/settings.json`）拿线路地址，凭证沿用 connector 的命名 `MAGPIE_LINE_<线路 id 大写>_API_KEY`（Cloudflare Access 线路再加 `_ACCESS_CLIENT_ID` / `_ACCESS_CLIENT_SECRET`），所以**在 connector 里配好的线路不用再填一遍**。取数走 `GET <baseUrl>/magpie/quotas/cards`（Bearer 线路 key），只读网关缓存、不触发刷新，避免和 connector 侧栏抢 30s/卡的限流；线路没有凭证时整行隐藏，与其它自动发现平台一致。同一平台有 magpie 卡片时，本地那条订阅行（如 Codex OAuth 行）会自动让位，不会出现两行 Codex。多线路同时配置时行 id 追加 `#<线路 id>` 区分。
 
 **MCP 平台**（纯可选扩展，通过另行注册的 `mcp__*` 工具取数；本仓库不包含这些 MCP 服务器）：智谱 BigModel、通义千问（百炼）、超算互联网、TokenRouter、SupaWriter。没注册时对应平台自动隐藏。
 

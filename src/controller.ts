@@ -20,6 +20,7 @@ import { burnInsight, itemKey, mergeHistory, recordSamples, spendInsight, type H
 import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-file.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 import { fetchSubscriptionRows } from './subscription.ts'
+import { fetchMagpieRows, isMagpiePlatform, probeMagpie } from './magpie.ts'
 import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
 import { platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
@@ -203,6 +204,24 @@ function summarize(snapshot: ProviderSnapshot): string {
     .filter((v): v is string => Boolean(v))
     .slice(0, 2)
   return parts.join(' · ')
+}
+
+/**
+ * 把 magpie 卡片行并入 providers，并压掉同名的本地订阅行：
+ * `magpie-codex` 与 `codex` 指向同一个账号，两行 Codex 只会让人困惑；
+ * 网关卡片更全（多窗口 + 余额 + 重置时间），优先留它。没有 magpie 行的
+ * 平台（Claude Code、本地 Codex 登录）保持原样。
+ * @param providers - 已聚合的行（原地改写）。
+ * @param magpieRows - magpie.ts 产出的卡片行。
+ */
+function mergeMagpieRows(providers: ProviderSnapshot[], magpieRows: ProviderSnapshot[]): void {
+  if (magpieRows.length === 0) return
+  const covered = new Set(magpieRows.map((row) => row.id.replace(/^magpie-/, '').replace(/#.*$/, '')))
+  for (let i = providers.length - 1; i >= 0; i -= 1) {
+    const id = providers[i]?.id
+    if (id !== undefined && covered.has(id)) providers.splice(i, 1)
+  }
+  providers.push(...magpieRows)
 }
 
 /** One resolved API key and where it came from. */
@@ -595,6 +614,12 @@ export class QuotaController implements QuotaControllerFace {
       // 不会把这两个限流端点打爆。
       providers.push(...await fetchSubscriptionRows())
 
+      // Magpie 网关（dsh-magpie-connector 的线路 + 额度卡片，见 magpie.ts）：
+      // 与订阅行同类，按 connector 自己保存的线路凭证自动发现——有线路且
+      // 凭证可用才出卡片，没有就整行隐藏。不走 activePlatformGate 门槛：
+      // magpie 的线路是 connector 的配置，不是 DSH 模型供应商的一部分。
+      mergeMagpieRows(providers, await fetchMagpieRows({ credentials }))
+
       // 火山方舟（AK/SK 控制面 OpenAPI，见 ark.ts）：与订阅行一样按本地
       // 凭据自动发现——有 AK/SK 才查；没有就整行隐藏，交给下面 DSH 模型
       // 供应商的 /models 探活兜底（同一平台 id，有额度行时探活自动跳过）。
@@ -845,6 +870,9 @@ export class QuotaController implements QuotaControllerFace {
     // 多账号卡片 id 形如 `deepseek#DEEPSEEK_B_API_KEY`：按该行自己的引用探活，
     // 不能落回适配器的默认引用（那会测到另一张卡）。
     const [platformId, explicitRef] = platform.split('#')
+    // Magpie 网关行：id 形如 `magpie-<provider>`（多线路时带 `#<线路 id>`），
+    // 走网关卡片的 GET 而不是 direct 适配器。
+    if (isMagpiePlatform(platformId)) return probeMagpie(platform, this.getCredentials())
     const direct = this.allDirectAdapters().find((a) => a.id === platformId)
     if (direct) {
       const refs = explicitRef ? [explicitRef] : [...direct.keyRefs, ...direct.envKeys]
