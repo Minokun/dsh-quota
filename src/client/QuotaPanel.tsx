@@ -42,14 +42,23 @@ const POS_MARGIN = 4
  */
 interface PillPos { x: number; y: number; w: number; h: number }
 
-/** Keep the pill fully inside the viewport. */
+/**
+ * Keep the pill fully inside the viewport. Positions are rounded to whole
+ * pixels: drag coordinates and `getBoundingClientRect()` are fractional, and
+ * a floating widget parked on a half pixel gets composited with subpixel
+ * offsets, which makes the small ring look blurry. Rounding is the only
+ * change here — the widget's size and shape stay exactly as designed.
+ */
 function clampPillPos(p: PillPos): PillPos {
   const vw = window.innerWidth
   const vh = window.innerHeight
+  const w = Math.round(p.w)
+  const h = Math.round(p.h)
   return {
-    ...p,
-    x: Math.min(Math.max(p.x, POS_MARGIN), Math.max(POS_MARGIN, vw - p.w - POS_MARGIN)),
-    y: Math.min(Math.max(p.y, POS_MARGIN), Math.max(POS_MARGIN, vh - p.h - POS_MARGIN)),
+    w,
+    h,
+    x: Math.round(Math.min(Math.max(p.x, POS_MARGIN), Math.max(POS_MARGIN, vw - w - POS_MARGIN))),
+    y: Math.round(Math.min(Math.max(p.y, POS_MARGIN), Math.max(POS_MARGIN, vh - h - POS_MARGIN))),
   }
 }
 
