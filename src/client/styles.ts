@@ -87,17 +87,26 @@ export const PANEL_CSS = `
 }
 
 .dq-panel {
-  width: 340px; max-height: min(64vh, 600px); overflow-y: auto; border-radius: 14px;
+  /* 面板宽度随视口收缩：窄窗口 / 分屏下不再比窗口还宽。 */
+  width: min(340px, calc(100vw - 24px)); max-height: min(64vh, 600px); overflow-y: auto; border-radius: 14px;
   background: var(--dsw-alias-bg-layer-2, rgba(22, 22, 30, 0.97)); color: var(--dsw-alias-label-primary, #eee);
   border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
   display: flex; flex-direction: column;
 }
-.dq-panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2)); position: sticky; top: 0; background: inherit; border-radius: 14px 14px 0 0; }
-/* 头部：标题/告警/按钮都不换行（中文单字换行会竖排），平台计数挪到 footer。 */
-.dq-panel-title { font-weight: 600; font-size: 14px; flex: 1; white-space: nowrap; }
+/* 头部：标题/告警一组、操作按钮一组；放不下时操作组整体换到第二行并
+   右对齐，按钮再多也不会把内容挤出面板。 */
+.dq-panel-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; row-gap: 6px;
+  padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2));
+  position: sticky; top: 0; background: inherit; border-radius: 14px 14px 0 0;
+}
+.dq-panel-headline { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.dq-panel-actions { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.dq-panel-title { font-weight: 600; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dq-panel-alert { white-space: nowrap; flex: none; }
-.dq-panel-head .dq-btn { flex: none; white-space: nowrap; }
+.dq-panel-head .dq-btn { flex: none; white-space: nowrap; padding: 5px 8px; }
+.dq-panel-close { padding: 5px 7px; }
 .dq-btn {
   padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 500; border: none; cursor: pointer;
   background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.15)); color: var(--dsw-alias-label-primary, #eee);

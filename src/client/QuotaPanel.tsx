@@ -497,31 +497,35 @@ export function QuotaPanel(props: QuotaPanelProps) {
       {state.open && (
         <div className="dq-panel" ref={panelRef}>
           <div className="dq-panel-head">
-            <span className="dq-panel-title">{t('panel.title')}</span>
-            {alerts > 0 && (
+            <div className="dq-panel-headline">
+              <span className="dq-panel-title">{t('panel.title')}</span>
+              {alerts > 0 && (
+                <button
+                  type="button"
+                  className="dq-panel-alert"
+                  title={`${alertTexts.join('\n')}\n${t('alert.ack')}`}
+                  onClick={() => { props.ackAlerts() }}
+                >{t('panel.alerts', { n: alerts })}</button>
+              )}
+            </div>
+            <div className="dq-panel-actions">
+              <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
+                {mode === 'pill' ? '◯' : '▬'}
+              </button>
               <button
                 type="button"
-                className="dq-panel-alert"
-                title={`${alertTexts.join('\n')}\n${t('alert.ack')}`}
-                onClick={() => { props.ackAlerts() }}
-              >{t('panel.alerts', { n: alerts })}</button>
-            )}
-            <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
-              {mode === 'pill' ? '◯' : '▬'}
-            </button>
-            <button
-              type="button"
-              className={`dq-btn ${orderMode ? 'dq-btn--primary' : 'dq-btn--ghost'}`}
-              title={t('order.hint')}
-              aria-pressed={orderMode}
-              onClick={() => { setOrderMode((v) => !v) }}
-            >
-              {orderMode ? t('order.on') : t('order.toggle')}
-            </button>
-            <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
-              {busy ? t('panel.refreshing') : t('panel.refresh')}
-            </button>
-            <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.close() }}>✕</button>
+                className={`dq-btn ${orderMode ? 'dq-btn--primary' : 'dq-btn--ghost'}`}
+                title={t('order.hint')}
+                aria-pressed={orderMode}
+                onClick={() => { setOrderMode((v) => !v) }}
+              >
+                {orderMode ? t('order.on') : t('order.toggle')}
+              </button>
+              <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
+                {busy ? t('panel.refreshing') : t('panel.refresh')}
+              </button>
+              <button type="button" className="dq-btn dq-btn--ghost dq-panel-close" title={t('panel.close')} onClick={() => { props.close() }}>✕</button>
+            </div>
           </div>
           <div className="dq-panel-body">
             {state.loaded && state.providers.length === 0 && (
