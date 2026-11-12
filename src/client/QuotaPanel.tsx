@@ -173,19 +173,23 @@ export function QuotaPanel(props: QuotaPanelProps) {
   useEffect(() => {
     props.watchSession(currentSessionId ?? undefined)
   }, [currentSessionId])
-  // 先按 apiKeyEnv 精确对应（同平台多号也准），再退回名称模糊匹配。
-  const rowFor = (provider: string): PanelProvider | undefined =>
-    providerRowOf(state.providers, provider, state.providerKeyRefs)
+  // 先按模型 id 的 provider 前缀认领（magpie 的多行共用一个凭证引用），再按
+  // apiKeyEnv 精确对应（同平台多号也准），最后退回名称模糊匹配。
+  const activeProvider = state.sessionModel?.provider ?? state.currentModel.provider
+  const activeModel = state.sessionModel?.model ?? state.currentModel.model
+  const rowFor = (provider: string, model?: string): PanelProvider | undefined =>
+    providerRowOf(state.providers, provider, state.providerKeyRefs, model)
   // 卡片顺序：当前在用的模型所在平台排第一（紧跟第一行的本会话用量卡片），
   // 其余平台保持 Host 下发的固定顺序；换模型时顺序实时跟着变。
   const orderedProviders = orderProviders(
     state.providers,
-    state.sessionModel?.provider ?? state.currentModel.provider,
+    activeProvider,
     state.providerKeyRefs,
+    activeModel,
   )
-  const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider), state.lang) : ''
+  const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider, state.sessionModel.model), state.lang) : ''
   // 默认模型的摘要同样在本地按当前语言拼（host 下发的 summary 文案固定中文）。
-  const defaultSummary = summarizeItems(rowFor(state.currentModel.provider), state.lang)
+  const defaultSummary = summarizeItems(rowFor(state.currentModel.provider, state.currentModel.model), state.lang)
   const summary = sessionSummary || defaultSummary || state.currentModel.summary
   const modelFrom = state.sessionModel
     ? `${t('model.from.session')} ${state.sessionModel.provider}/${state.sessionModel.model}`
@@ -214,7 +218,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const costText = usageCost ? t('session.card.cost', { cost: `$${formatUsd(usageCost.usd)}` }) : ''
   // 计费周期行：会话模型所在平台按自身计费形态（周/月/短窗口/余额）
   // 给「本周消耗 / 预计耗尽」一句话（billing-line.ts 纯函数）。
-  const billingProvider = rowFor((state.sessionModel ?? state.currentModel).provider)
+  const billingProvider = rowFor((state.sessionModel ?? state.currentModel).provider, (state.sessionModel ?? state.currentModel).model)
   const billingText = showUsageCard ? billingLine(billingProvider, t) : ''
 
   // 红点 = 用量越阈值条目 + 查询失败平台 + 登录失效提醒；面板头部、悬浮球
@@ -242,7 +246,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // 悬浮环焦点平台：优先跟随当前会话模型对应的卡片；无对应时在 ok 且
   // 有百分比条目的平台间轮播（悬停暂停）。
   const ringCandidates = state.providers.filter((p) => p.status === 'ok' && headlineItem(p) !== undefined)
-  const sessionPlatformId = state.sessionModel ? (rowFor(state.sessionModel.provider)?.id ?? '') : ''
+  const sessionPlatformId = state.sessionModel ? (rowFor(state.sessionModel.provider, state.sessionModel.model)?.id ?? '') : ''
   const sessionIdx = ringCandidates.findIndex((p) => p.id === sessionPlatformId || p.id.startsWith(`${sessionPlatformId}#`))
   const [carouselIdx, setCarouselIdx] = useState(0)
   const [ringHover, setRingHover] = useState(false)

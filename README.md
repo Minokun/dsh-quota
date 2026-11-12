@@ -43,6 +43,14 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 **自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt、**OpenDesign**、**OpenAI Platform**、**Anthropic Claude**。面板「API Key 管理」覆盖全部直连平台——填 key 即接入（写入 DSH 凭证域，模型配置也能用）。
 
+**Magpie（本机网关）**：装了 [Magpie](https://usemagpie.ai) 就自动多出若干张卡，一个账号一张——**网关在跑就显示，没跑就整行隐藏**，不需要填任何 key（回环口 `GET /v1/magpie/quotas` 免鉴权）。网关里接了几个订阅/套餐/余额账号就有几行，模型配置里配了 `magpie` / `magpie-anthropic` / `magpie-responses` 供应商时才会去查。端口默认 `127.0.0.1:3425`，用环境变量 `MAGPIE_URL` 覆盖。
+
+- **额度窗口**：网关的 `5 hours` / `7 days` / `30 days` / `MCP · Month` 等窗口直接映射成「5 小时窗口」「7 天窗口」「30 天窗口」「MCP 月度额度」，`used` 即已用百分比；带 `limit` 的计数窗口（如 `0 / 1000`）照实显示原读数；带 `unit` + `balance` 的（如 Kimi 的 `Extra usage`）显示金额而非进度条
+- **用量记账**：每个账号追加一条「近 30 天消耗」（花费 + 调用次数，取自 `GET /v1/magpie/usage`）。**纯 API-key 供应商**（按量计费、没有订阅窗口的，如 sidrune）只在用量里有记录，插件会单独给它一行，否则它在面板上完全不可见
+- **卡片灰色注释**：账号名、套餐有效期、是否自动续费
+- **当前模型认领**：magpie 的所有行共用同一个凭证引用（一个网关 Key 背后是好几个账号），所以置顶按**模型 id 的 provider 前缀**认领（`codex/gpt-5.6-terra` → `magpie#codex`），不会永远把本机第一行顶到前面
+- **与内置订阅行去重**：`subscription.ts` 也会直连 `chatgpt.com` 读 `~/.codex/auth.json` 取 Codex 额度。magpie 收的是同一份登录态、且自带代理与 token 续期，所以 magpie 那行**查到了额度**时内置行自动让位（避免同一账号两张卡、其中一张在需要代理的网络里红成 `fetch failed`）；magpie 没接该账号或那行失败时，内置行照旧保留
+
 **OpenDesign（open-design.ai / Vela）**：额度同样**不在推理 API 上**——模型面 `amr-link.open-design.ai/v1` 只认 `sk-amr-…` 推理 key，没有任何额度路由；额度在**控制面** `amr-api.open-design.ai/api/v1`，且只认 `vela_ctrl_…` 控制面 key（任何网页都不印这个 key，由 vela CLI 设备授权签发）。所以凭证引用是 `OPENDESIGN_CONTROL_KEY`（别名 `VELA_CONTROL_KEY`），**不是**给模型供应商配的 `OPENDESIGN_API_KEY`：后者填进来只会得到 401，面板会直接告诉你这一点。
 
 **查 OD 额度必须先登录 Open Design**：那把 key 由 vela 的设备授权签发，没有任何网页会显示它。所以本插件不要求你手抄 key ——它每次刷新都直接读 vela 的登录态（`~/.amr/config.json` 的 `profiles.prod.controlKey`），变了就写回 DSH 凭证域，于是「在 Open Design 里登录 / 重新登录」就等于「面板恢复」，key 轮换也自动跟上。没登录时卡片不会消失，而是钉住显示「需要先登录 Open Design（vela CLI / 桌面版）才能查额度」，卡片上的灰字会写明本次读数用的是「Open Design 登录态」还是「DSH 凭证域」。查询路径：`GET /workspaces/current` 解析 workspaceId → `GET /workspaces/{id}/billing/preflight` 取额度窗口与钱包 → `GET /billing/summary` 补累计消费（拿不到只少一行）。卡片显示 `7 天窗口`（credits 与折算 USD）、**钱包余额**（负数即欠费，照实显示）、累计消费；窗口各自独立、**绝不相加**。多工作空间时用环境变量 `OPENDESIGN_WORKSPACE_ID` 钉住。注意别用 `/billing/coding-plan-usage`——那个端点对控制面 key 返回 401，`preflight` 才是能用的。

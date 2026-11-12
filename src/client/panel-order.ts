@@ -11,7 +11,7 @@
  */
 
 import type { PanelProvider } from './controller.ts'
-import { platformForProvider } from './platform-map.ts'
+import { MAGPIE_PLATFORM_ID, platformForProvider } from './platform-map.ts'
 
 /**
  * DSH 模型供应商 id → 面板行：先按 apiKeyEnv 精确对应（同平台多号也准），
@@ -21,14 +21,25 @@ export function providerRowOf(
   providers: readonly PanelProvider[],
   provider: string | undefined,
   providerKeyRefs: Record<string, string>,
+  model?: string,
 ): PanelProvider | undefined {
   if (!provider) return undefined
+  const platformId = platformForProvider(provider)
+  // Magpie 的行共用同一个凭证引用（一个网关 Key 背后是好几个账号），按 ref
+  // 找只会命中本机第一行——那样置顶的永远不是正在用的那个账号。模型 id 自带
+  // provider 前缀（`codex/gpt-5.6-terra`），先按它认领。
+  if (platformId === MAGPIE_PLATFORM_ID) {
+    const owner = model?.split('/')[0]?.trim().toLowerCase()
+    if (owner) {
+      const hit = providers.find((p) => p.id === `${MAGPIE_PLATFORM_ID}#${owner}` || p.id.startsWith(`${MAGPIE_PLATFORM_ID}#${owner}/`))
+      if (hit) return hit
+    }
+  }
   // apiKeyEnv 精确对应优先，且不要求 provider 能映射到内置平台——自定义平台
   // 的凭证引用同样可能就是这个 provider 的 apiKeyEnv。
   const ref = providerKeyRefs[provider]
   const byRef = ref ? providers.find((p) => p.keyRef === ref) : undefined
   if (byRef) return byRef
-  const platformId = platformForProvider(provider)
   if (!platformId) return undefined
   return providers.find((p) => p.id === platformId || p.id.startsWith(`${platformId}#`))
 }
@@ -41,8 +52,9 @@ export function orderProviders(
   providers: readonly PanelProvider[],
   activeProvider: string,
   providerKeyRefs: Record<string, string>,
+  model?: string,
 ): PanelProvider[] {
-  const active = providerRowOf(providers, activeProvider, providerKeyRefs)
+  const active = providerRowOf(providers, activeProvider, providerKeyRefs, model)
   if (!active) return [...providers]
   return [active, ...providers.filter((p) => p !== active)]
 }

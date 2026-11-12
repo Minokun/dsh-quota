@@ -20,6 +20,7 @@ import { burnInsight, itemKey, mergeHistory, recordSamples, spendInsight, type H
 import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-file.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 import { fetchSubscriptionRows } from './subscription.ts'
+import { MAGPIE_PLATFORM_ID, dropDuplicateSubscriptionRows, fetchMagpieRows, magpieRowForModel } from './magpie.ts'
 import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
 import { platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
@@ -453,6 +454,10 @@ export class QuotaController implements QuotaControllerFace {
   private async doRefresh(): Promise<Config> {
     await this.patch({ refreshing: true })
     const startedAt = new Date().toISOString()
+    // Magpie 的多行共用同一个凭证引用（MAGPIE_GATEWAY_KEY），靠 apiKeyEnv
+    // 认领「当前在用」只会命中本机第一行；模型 id 的 provider 前缀才准，
+    // 所以本轮查到的 magpie 行单独留一份给下面 currentModel 用。
+    let magpieRowsForModel: ProviderSnapshot[] = []
     try {
       const credentials = this.getCredentials()
       const tools = this.ctx.get('tools')
@@ -593,7 +598,23 @@ export class QuotaController implements QuotaControllerFace {
       // 不走 activePlatformGate 门槛——本地有登录凭证就显示，无凭证整行
       // 隐藏（自动发现语义）。查询带 60s TTL 缓存兜底，看门狗退避补刷
       // 不会把这两个限流端点打爆。
-      providers.push(...await fetchSubscriptionRows())
+      const subscriptionRows = await fetchSubscriptionRows()
+
+      // Magpie 本机网关（见 magpie.ts）：一次 GET 出多行，本机接了几个账号
+      // 就有几行。与订阅行同属自动发现——网关在跑就显示，没跑就整行隐藏，
+      // 交给下面 `/models` 探活兜底。走模型供应商门槛：DSH 没配 magpie /
+      // magpie-anthropic / magpie-responses 就不查。
+      let magpieRows: ProviderSnapshot[] = []
+      if (gate === undefined || gate.platforms.has(MAGPIE_PLATFORM_ID)) {
+        magpieRows = await fetchMagpieRows()
+        providers.push(...magpieRows)
+        magpieRowsForModel = magpieRows
+      }
+
+      // 订阅行最后并入，并让与 magpie 重复的那张让位：两边读的是同一份
+      // `~/.codex/auth.json`，而 magpie 带代理与 token 续期，直连那条在需要
+      // 代理的网络里只会变红。magpie 没查到该账号时内置行照旧保留。
+      providers.push(...dropDuplicateSubscriptionRows(subscriptionRows, magpieRows))
 
       // 火山方舟（AK/SK 控制面 OpenAPI，见 ark.ts）：与订阅行一样按本地
       // 凭据自动发现——有 AK/SK 才查；没有就整行隐藏，交给下面 DSH 模型
@@ -614,7 +635,12 @@ export class QuotaController implements QuotaControllerFace {
       if (dm?.provider) {
         const platform = platformForProvider(dm.provider)
         const ref = providerKeyRefs[dm.provider]
-        const row = (ref ? providers.find((p) => p.keyRef === ref) : undefined)
+        // Magpie 行先按模型 id 的 provider 前缀认领（`codex/gpt-5.6-terra`
+        // → `magpie#codex`）：同一个网关 Key 下所有 magpie 行共用 ref，
+        // 按 ref 找只会命中本机第一行，摘要就写错了账号。
+        const magpieRow = platform === MAGPIE_PLATFORM_ID ? magpieRowForModel(magpieRowsForModel, dm.model) : undefined
+        const row = magpieRow
+          ?? (ref ? providers.find((p) => p.keyRef === ref) : undefined)
           ?? (platform ? providers.find((p) => p.id === platform || p.id.startsWith(`${platform}#`)) : undefined)
         currentModel = { provider: dm.provider, model: dm.model, platform: row?.id ?? platform, summary: row ? summarize(row) : '' }
       }

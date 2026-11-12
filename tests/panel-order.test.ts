@@ -69,3 +69,31 @@ test('orderProviders: multi-account platform pins only the exact-ref row', () =>
   const ordered = orderProviders(rows, 'deepseek-b', { 'deepseek-b': 'DEEPSEEK_API_KEY_B' })
   assert.deepEqual(ordered.map((p) => p.id), ['deepseek#2', 'deepseek', 'kimi'])
 })
+
+test('orderProviders: a magpie session pins the row of ITS provider, not the first row', () => {
+  // Magpie 网关的所有行共用同一个凭证引用（MAGPIE_GATEWAY_KEY），所以
+  // apiKeyEnv 精确匹配必然命中「本机第一行」——codex 卡片会错误置顶，而会话
+  // 实际跑的是 codex 还是 sidrune 完全没被考虑。模型 id 的 provider 前缀才是
+  // 唯一可靠的依据。
+  const rows = [
+    row('magpie#codex', 'MAGPIE_GATEWAY_KEY'),
+    row('magpie#sidrune', 'MAGPIE_GATEWAY_KEY'),
+    row('magpie#kimi', 'MAGPIE_GATEWAY_KEY'),
+    row('kimi', 'KIMI_CODING_API_KEY'),
+  ]
+  const refs = { 'magpie-responses': 'MAGPIE_GATEWAY_KEY', 'magpie-anthropic': 'MAGPIE_GATEWAY_KEY', 'magpie': 'MAGPIE_GATEWAY_KEY' }
+  // provider 前缀来自模型 id：`sidrune/claude-sonnet-5-5` → magpie#sidrune。
+  assert.equal(providerRowOf(rows, 'magpie-anthropic', refs, 'sidrune/claude-sonnet-5-5')?.id, 'magpie#sidrune')
+  assert.deepEqual(
+    orderProviders(rows, 'magpie-anthropic', refs, 'sidrune/claude-sonnet-5-5').map((p) => p.id),
+    ['magpie#sidrune', 'magpie#codex', 'magpie#kimi', 'kimi'],
+  )
+  // 模型没给（旧调用点）时退回 ref 匹配，行为与改动前一致。
+  assert.equal(providerRowOf(rows, 'magpie-responses', refs)?.id, 'magpie#codex')
+})
+
+test('orderProviders: a magpie model whose provider has no row falls back to the first magpie row', () => {
+  const rows = [row('magpie#codex', 'MAGPIE_GATEWAY_KEY'), row('kimi')]
+  // 模型路由到网关里没接的供应商时，不要因此丢掉置顶（退回 ref 命中）。
+  assert.equal(providerRowOf(rows, 'magpie-responses', { 'magpie-responses': 'MAGPIE_GATEWAY_KEY' }, 'zai/glm-5.3')?.id, 'magpie#codex')
+})

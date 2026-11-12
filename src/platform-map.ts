@@ -16,12 +16,22 @@
 export const ARK_PLATFORM_ID = 'volcark'
 
 /**
+ * Magpie 本机网关在面板里的平台 id。额度行 id 是 `magpie#<provider>`
+ * （同一 provider 多账号再带 `/user` 后缀），所以认领时按前缀匹配。
+ */
+export const MAGPIE_PLATFORM_ID = 'magpie'
+
+/**
  * Map a model-provider id onto a quota platform id.
  * @param provider - DSH 模型供应商 id（不区分大小写）。
  * @returns 面板平台 id；没有对应平台时返回空串。
  */
 export function platformForProvider(provider: string): string {
   const p = provider.toLowerCase()
+  // Magpie 放在最前：它的供应商 id 是 `magpie` / `magpie-anthropic` /
+  // `magpie-responses`，后两个含 'anthropic'，会被下面的官方 Admin 映射
+  // 抢先命中，于是把本机网关错认成 Anthropic 组织账号。
+  if (p.includes('magpie')) return MAGPIE_PLATFORM_ID
   if (p.includes('kimi')) return 'kimi'
   if (p.includes('deepseek')) return 'deepseek'
   if (p.includes('zhipu') || p.includes('glm')) return 'zhipu'

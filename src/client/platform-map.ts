@@ -10,4 +10,4 @@
  * @module dsh-quota/client/platform-map
  */
 
-export { ARK_PLATFORM_ID, platformForProvider } from '../platform-map.ts'
+export { ARK_PLATFORM_ID, MAGPIE_PLATFORM_ID, platformForProvider } from '../platform-map.ts'
