@@ -22,6 +22,7 @@ import { configuredMcpServers } from './dsh-config.ts'
 import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
+import { MAGPIE_LINE_REF } from './magpie-connector.ts'
 
 export { Config }
 
@@ -221,7 +222,9 @@ export function apply(ctx: Context, config: Config): void {
     // 多账号：同平台第二个供应商的 apiKeyEnv（如 DEEPSEEK_B_API_KEY）不在
     // 内置目录里，但同样要触发刷新，否则新加的卡要等下一个周期才出现。
     const providerRef = llmProvidersOf(ctx, settingsForms).some((lp) => lp.keyRef === name)
-    if (!KNOWN_REFS.has(name) && !custom && !providerRef) return
+    // connector 线路 key（MAGPIE_LINE_<id>_API_KEY）：不在内置目录里，但换了
+    // key 就该重查那个网关，否则新额度要等下一个刷新周期。
+    if (!KNOWN_REFS.has(name) && !custom && !providerRef && !MAGPIE_LINE_REF.test(name)) return
     if (pending !== undefined) clearTimeout(pending)
     pending = setTimeout(() => {
       pending = undefined

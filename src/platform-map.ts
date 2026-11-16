@@ -22,12 +22,37 @@ export const ARK_PLATFORM_ID = 'volcark'
 export const MAGPIE_PLATFORM_ID = 'magpie'
 
 /**
+ * dsh-magpie-connector 额度行的平台 id 前缀：行 id 形如
+ * `magpie-connector-<owner>`（owner 为网关卡片上的 provider）。
+ *
+ * 为什么不用 `magpie`：同目录的 `magpie.ts` 接的是 Magpie 桌面版本机网关，
+ * 行 id 是 `magpie#<owner>`。connector 是另一条线路（读它自己的 settings.json
+ * + 线路 key，可连多网关/多账号），两套卡片可以同时存在，前缀必须分开。
+ */
+export const CONNECTOR_PLATFORM_PREFIX = 'magpie-connector-'
+
+/**
+ * dsh-magpie-connector 的模型供应商前缀：connector 把网关里的每个 owner
+ * （codex / commandcode / opendesign …）注册成一条路由
+ * `dsh-magpie-connector-<owner>`。
+ */
+const CONNECTOR_PROVIDER_PREFIX = 'dsh-magpie-connector-'
+
+/**
  * Map a model-provider id onto a quota platform id.
  * @param provider - DSH 模型供应商 id（不区分大小写）。
  * @returns 面板平台 id；没有对应平台时返回空串。
  */
 export function platformForProvider(provider: string): string {
   const p = provider.toLowerCase()
+  // dsh-magpie-connector 必须排在网关规则之前：它的供应商 id 也含 `magpie`
+  // （`dsh-magpie-connector-codex`），落到下面会被认成 `magpie`，置顶与摘要
+  // 就指到另一套卡片上。owner 名里还可能含 `opendesign`/`openai` 等关键词，
+  // 所以整条规则放在最前面。
+  if (p.startsWith(CONNECTOR_PROVIDER_PREFIX)) {
+    const owner = p.slice(CONNECTOR_PROVIDER_PREFIX.length)
+    return owner ? `${CONNECTOR_PLATFORM_PREFIX}${owner}` : ''
+  }
   // Magpie 放在最前：它的供应商 id 是 `magpie` / `magpie-anthropic` /
   // `magpie-responses`，后两个含 'anthropic'，会被下面的官方 Admin 映射
   // 抢先命中，于是把本机网关错认成 Anthropic 组织账号。

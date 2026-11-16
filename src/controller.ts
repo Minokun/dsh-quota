@@ -21,8 +21,9 @@ import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-fil
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
 import { fetchSubscriptionRows } from './subscription.ts'
 import { MAGPIE_PLATFORM_ID, dropDuplicateSubscriptionRows, fetchMagpieRows, magpieRowForModel } from './magpie.ts'
+import { fetchConnectorRows, isConnectorPlatform, probeConnector } from './magpie-connector.ts'
 import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
-import { platformForProvider } from './platform-map.ts'
+import { CONNECTOR_PLATFORM_PREFIX, platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
@@ -183,6 +184,24 @@ function shortTag(label: string): string {
   if (/本周|周/.test(label)) return '周'
   if (/月/.test(label)) return '月'
   return ''
+}
+
+/**
+ * 把 dsh-magpie-connector 的卡片行并入 providers，并压掉同平台的本地行：
+ * `magpie-connector-codex` 与本地 `codex` 指向同一个账号，两行 Codex 只会让
+ * 人困惑；connector 的卡片更全（多窗口 + 余额 + 重置时间），优先留它。
+ * 只在 connector 真的有该平台行时让位——connector 没装的机器行为不变。
+ * @param providers - 已聚合的行（原地改写）。
+ * @param connectorRows - magpie-connector.ts 产出的卡片行。
+ */
+function mergeConnectorRows(providers: ProviderSnapshot[], connectorRows: ProviderSnapshot[]): void {
+  if (connectorRows.length === 0) return
+  const covered = new Set(connectorRows.map((row) => row.id.replace(CONNECTOR_PLATFORM_PREFIX, '').replace(/#.*$/, '')))
+  for (let i = providers.length - 1; i >= 0; i -= 1) {
+    const id = providers[i]?.id
+    if (id !== undefined && covered.has(id)) providers.splice(i, 1)
+  }
+  providers.push(...connectorRows)
 }
 
 /** One-line quota summary for the pill: up to two headline windows joined by " · ". */
@@ -616,6 +635,12 @@ export class QuotaController implements QuotaControllerFace {
       // 代理的网络里只会变红。magpie 没查到该账号时内置行照旧保留。
       providers.push(...dropDuplicateSubscriptionRows(subscriptionRows, magpieRows))
 
+      // dsh-magpie-connector（见 magpie-connector.ts）：读 connector 自己的
+      // settings.json，逐条线路查网关卡片。与订阅行同属自动发现——装了
+      // connector 且线路有凭证才出现，否则整行隐藏；不走 activePlatformGate
+      // （connector 的线路与 DSH 模型供应商配置无关）。
+      mergeConnectorRows(providers, await fetchConnectorRows({ credentials }))
+
       // 火山方舟（AK/SK 控制面 OpenAPI，见 ark.ts）：与订阅行一样按本地
       // 凭据自动发现——有 AK/SK 才查；没有就整行隐藏，交给下面 DSH 模型
       // 供应商的 /models 探活兜底（同一平台 id，有额度行时探活自动跳过）。
@@ -868,6 +893,8 @@ export class QuotaController implements QuotaControllerFace {
         return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
       }
     }
+    // connector 线路卡（见 magpie-connector.ts）：重新 GET 一次该线路的卡片。
+    if (isConnectorPlatform(platform)) return probeConnector(platform, this.getCredentials())
     // 多账号卡片 id 形如 `deepseek#DEEPSEEK_B_API_KEY`：按该行自己的引用探活，
     // 不能落回适配器的默认引用（那会测到另一张卡）。
     const [platformId, explicitRef] = platform.split('#')

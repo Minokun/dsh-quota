@@ -44,6 +44,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 **自动发现平台**（key 在 DSH 凭证域/环境变量能解析就自动出现，否则隐藏）：Z.AI Coding、Moonshot、OpenRouter、SiliconFlow（国际/国内）、MiniMax Coding（国际/国内）、StepFun、xAI、OpenCode Go、DeepInfra、Venice、NeuralWatt、**OpenDesign**、**OpenAI Platform**、**Anthropic Claude**。面板「API Key 管理」覆盖全部直连平台——填 key 即接入（写入 DSH 凭证域，模型配置也能用）。
 
 **Magpie（本机网关）**：装了 [Magpie](https://usemagpie.ai) 就自动多出若干张卡，一个账号一张——**网关在跑就显示，没跑就整行隐藏**，不需要填任何 key（回环口 `GET /v1/magpie/quotas` 免鉴权）。网关里接了几个订阅/套餐/余额账号就有几行，模型配置里配了 `magpie` / `magpie-anthropic` / `magpie-responses` 供应商时才会去查。端口默认 `127.0.0.1:3425`，用环境变量 `MAGPIE_URL` 覆盖。
+**dsh-magpie-connector（多线路）**：装了 `dsh-magpie-connector` 插件时，它配的每条线路（一个网关 `baseUrl` + 一套 `MAGPIE_LINE_<ID>_API_KEY`，Cloudflare Access 线路再加 `_ACCESS_CLIENT_ID`/`_ACCESS_CLIENT_SECRET`）都会变成一行额度卡，可同时接多个网关 / 多个账号。配置直接读 connector 自己的 `$DSH_HOME/plugins/dsh-magpie-connector/settings.json`，不用在配额插件里重填 key；取数走 `GET <baseUrl>/magpie/quotas/cards` 的只读缓存（不触发网关刷新，避免和 connector 侧栏抢 30s 限流），结果带 60s TTL。行 id 用独立前缀 `magpie-connector-<owner>`，与上面桌面版网关的 `magpie#<owner>` 互不干扰；同一平台已有 connector 卡片时，本地订阅行自动让位。没装 connector 或线路没填 key 时整行隐藏。
 
 - **额度窗口**：网关的 `5 hours` / `7 days` / `30 days` / `MCP · Month` 等窗口直接映射成「5 小时窗口」「7 天窗口」「30 天窗口」「MCP 月度额度」，`used` 即已用百分比；带 `limit` 的计数窗口（如 `0 / 1000`）照实显示原读数；带 `unit` + `balance` 的（如 Kimi 的 `Extra usage`）显示金额而非进度条
 - **用量记账**：每个账号追加一条「近 30 天消耗」（花费 + 调用次数，取自 `GET /v1/magpie/usage`）。**纯 API-key 供应商**（按量计费、没有订阅窗口的，如 sidrune）只在用量里有记录，插件会单独给它一行，否则它在面板上完全不可见
