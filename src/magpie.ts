@@ -71,14 +71,49 @@ export function magpieBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * 把一个窗口名拆成「限定词 + 窗口名」。网关对同一 provider 的多个额度池会
+ * 加限定词区分，形如 `Gemini · 7 days` / `Claude & GPT · 7 days`。
+ * @param name - 网关给的原始窗口名。
+ * @returns `[qualifier, rest]`；没有限定词时 qualifier 为 undefined。
+ */
+function splitWindowQualifier(name: string): [string | undefined, string] {
+  const cut = name.indexOf('·')
+  if (cut <= 0) return [undefined, name]
+  const qualifier = name.slice(0, cut).trim()
+  const rest = name.slice(cut + 1).trim()
+  if (!qualifier || !rest) return [undefined, name]
+  return [qualifier, rest]
+}
+
+/**
  * 窗口名 → 面板标签。网关原生写英文（`5 hours` / `7 days` / `MCP · Month`
  * / `Extra usage`），这里换成与其它平台一致的叫法——顺带让
  * `summarize()` 的 `/窗口|周|余额|额度|金额|消耗/` 命中，pill 才有一条摘要。
+ *
+ * **限定词必须保留**：同一个 provider 常常同时挂两个同名窗口，网关靠 `·`
+ * 前缀区分（agy-cli 就是 `Gemini · 7 days` 与 `Claude & GPT · 7 days`）。
+ * 早先只取数字后缀，两者都变成「7 天窗口」，于是面板上出现两行同名条目、
+ * 且条目 key `${providerId}::${label}` 相撞——提醒状态机里高值那条刚记下
+ * 「已提醒」，同一轮低值那条又把它清掉，用户就每 60 秒被弹一次（历史采样
+ * 也会被写进同一根序列，速率/ETA 全废）。见 usage-alerts.ts 的 sameWindow。
  * @param name - 网关给的窗口名（可能缺失）。
  * @returns 中文标签；认不出的原样返回（宁可显示原名也别吞掉）。
  */
 export function magpieWindowLabel(name: string | undefined): string {
   if (!name) return '额度'
+  // `MCP · Month` 的限定词与窗口名是一体的，先整体认掉。
+  if (/mcp/i.test(name) && /month/i.test(name)) return 'MCP 月度额度'
+  const [qualifier, rest] = splitWindowQualifier(name)
+  const base = windowBaseLabel(rest)
+  return qualifier === undefined ? base : `${qualifier} ${base}`
+}
+
+/**
+ * 不带限定词的窗口名 → 中文标签（{@link magpieWindowLabel} 的内层）。
+ * @param name - 已剥掉 `·` 限定词的窗口名。
+ * @returns 中文标签；认不出的原样返回。
+ */
+function windowBaseLabel(name: string): string {
   const hours = name.match(/(\d+)\s*hours?/i)
   if (hours?.[1]) return `${hours[1]} 小时窗口`
   const days = name.match(/(\d+)\s*days?/i)
@@ -144,8 +179,7 @@ export function magpieWindowItem(w: Record<string, unknown>): QuotaItem {
   }
 }
 
-/** 一行卡片的灰色注释：账号、有效期、续费状态。 */
-function magpieNote(cards: Array<Record<string, unknown>>): string | undefined {
+/** 一行卡片的灰色注释：账号、有效期、续费状态。 */function magpieNote(cards: Array<Record<string, unknown>>): string | undefined {
   const parts: string[] = []
   const user = cards.map((c) => str(c.user)).find(Boolean)
   if (user) parts.push(`账号 ${user}`)
@@ -163,6 +197,32 @@ function magpieNote(cards: Array<Record<string, unknown>>): string | undefined {
 function rowId(provider: string, user?: string): string {
   const slug = user?.trim().toLowerCase().replace(/[^a-z0-9@._-]+/g, '-').replace(/^-+|-+$/g, '')
   return slug ? `${MAGPIE_PLATFORM_ID}#${provider}/${slug}` : `${MAGPIE_PLATFORM_ID}#${provider}`
+}
+
+/**
+ * 保证同一行内条目标签唯一。
+ *
+ * 标签是条目在面板、历史采样（`${providerId}::${label}`）和用量提醒状态机
+ * 里的**身份**：两条标签相同的条目会共用一个 key，互相覆盖/清除对方的
+ * 「已提醒」记录，也会把两份读数写进同一根时序。网关的 `·` 限定词已能区分
+ * 绝大多数情况（见 {@link magpieWindowLabel}），这里是兜底：真撞名时给后面
+ * 那条补一个序号，宁可标签略丑也不能让身份复用。
+ * @param items - 已组装好的条目（保持网关顺序）。
+ * @returns 标签互不相同的条目（原对象未改动）。
+ */
+function dedupeItemLabels(items: readonly QuotaItem[]): QuotaItem[] {
+  const seen = new Set<string>()
+  return items.map((item) => {
+    if (!seen.has(item.label)) {
+      seen.add(item.label)
+      return item
+    }
+    let n = 2
+    while (seen.has(`${item.label} (${n})`)) n += 1
+    const label = `${item.label} (${n})`
+    seen.add(label)
+    return { ...item, label }
+  })
 }
 
 /**
@@ -246,7 +306,7 @@ export function parseMagpieQuotas(body: unknown): ProviderSnapshot[] {
         status: 'ok',
         via: 'api',
         ...(message ? { message } : {}),
-        items,
+        items: dedupeItemLabels(items),
       })
     }
   }

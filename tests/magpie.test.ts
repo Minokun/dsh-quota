@@ -28,6 +28,56 @@ test('window names translate to the panel vocabulary', () => {
   assert.equal(magpieWindowLabel(undefined), '额度')
 })
 
+test('a qualified window name keeps its qualifier so two pools never collide', () => {
+  // 回归：agy-cli 同时挂 `Gemini · 7 days` 与 `Claude & GPT · 7 days`。旧实现
+  // 只取数字后缀，两条都叫「7 天窗口」——面板上两行同名，且条目 key
+  // `${providerId}::${label}` 相撞：提醒状态机里高值那条刚记下已提醒，
+  // 同轮低值那条就把它清掉，用户每 60 秒被弹一次。
+  assert.equal(magpieWindowLabel('Gemini · 7 days'), 'Gemini 7 天窗口')
+  assert.equal(magpieWindowLabel('Gemini · 5 hours'), 'Gemini 5 小时窗口')
+  assert.equal(magpieWindowLabel('Claude & GPT · 7 days'), 'Claude & GPT 7 天窗口')
+  assert.equal(magpieWindowLabel('Claude & GPT · 5 hours'), 'Claude & GPT 5 小时窗口')
+  // 限定词里的 '&' 与空格要原样保留，不能被规整掉。
+  assert.notEqual(magpieWindowLabel('Gemini · 7 days'), magpieWindowLabel('Claude & GPT · 7 days'))
+  // `MCP · Month` 的限定词与窗口名是一体的：整体认成月度额度，不拆成
+  // 「MCP 月度额度」以外的怪名字。
+  assert.equal(magpieWindowLabel('MCP · Month'), 'MCP 月度额度')
+})
+
+test('labels stay unique inside one row even if upstream repeats a name verbatim', () => {
+  // 兜底：限定词也救不了的真撞名（网关原样重复同名窗口）不能共用条目 key。
+  const rows = parseMagpieQuotas({
+    data: [{
+      provider: 'relay', name: 'Relay', kind: 'subscription',
+      windows: [{ name: '7 days', used: 90, remaining: 10 }, { name: '7 days', used: 10, remaining: 90 }],
+    }],
+  })
+  const labels = rows[0]?.items.map((i) => i.label) ?? []
+  assert.equal(new Set(labels).size, labels.length, 'one row never has duplicate item labels')
+  assert.deepEqual(labels, ['7 天窗口', '7 天窗口 (2)'])
+})
+
+test('a real agy-cli payload yields one distinct label per pool', () => {
+  // 2026-11-17 实测载荷（网关同时挂了 Gemini 与 Claude & GPT 两个池）。
+  const rows = parseMagpieQuotas({
+    data: [{
+      provider: 'agy-cli', name: 'agy-cli', kind: 'subscription', user: 'wxk952718180@gmail.com',
+      windows: [
+        { name: 'Gemini · 7 days', used: 87.470147, remaining: 12.529853, resetsAt: '2026-11-21T02:44:19Z' },
+        { name: 'Gemini · 5 hours', used: 2.694529, remaining: 97.305471, resetsAt: '2026-11-17T18:37:07Z' },
+        { name: 'Claude & GPT · 7 days', used: 0, remaining: 100, resetsAt: '2026-11-24T13:59:13Z' },
+        { name: 'Claude & GPT · 5 hours', used: 0, remaining: 100, resetsAt: '2026-11-17T18:59:13Z' },
+      ],
+    }],
+  })
+  const labels = rows[0]?.items.map((i) => i.label) ?? []
+  assert.deepEqual(labels, ['Gemini 7 天窗口', 'Gemini 5 小时窗口', 'Claude & GPT 7 天窗口', 'Claude & GPT 5 小时窗口'])
+  assert.equal(new Set(labels).size, 4)
+  // 越线的是 Gemini 那条：87.47% 必须还挂在正确条目上。
+  assert.equal(rows[0]?.items[0]?.percent, 87.470147)
+  assert.equal(rows[0]?.items[2]?.percent, 0)
+})
+
 // ── 单项三车道 ───────────────────────────────────────────────────────────────
 
 test('a percent window turns into 已用 N% and never double-renders remaining', () => {

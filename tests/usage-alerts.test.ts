@@ -65,14 +65,71 @@ test('dropping below the threshold clears the window mark even without a resetAt
   assert.equal(r.alerts.filter((a) => a.kind === 'threshold').length, 1, 're-crossing after a dip is a new event')
 })
 
-test('eta fires once per window and re-arms after recovering past the recover line', () => {
+test('eta fires once per window and does NOT re-arm when the estimate recovers', () => {
+  // 用户要求：触发过一次就只提醒一次，不要因为 ETA 估算回升又弹一遍。
+  // 旧实现「回升到 60 分钟以上就清标记」会让慢下来的额度反复唤醒提醒。
   let state = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 25, resetAt: 'w1' }] })], TH, createUsageAlertState()).state
   let r = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 20, resetAt: 'w1' }] })], TH, state)
   state = r.state
   assert.equal(r.alerts.filter((a) => a.kind === 'eta').length, 0, 'same window already fired')
   state = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 120, resetAt: 'w1' }] })], TH, state).state
   r = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 15, resetAt: 'w1' }] })], TH, state)
-  assert.equal(r.alerts.filter((a) => a.kind === 'eta').length, 1, 'recovered past 60min then dipped again: new event')
+  assert.equal(r.alerts.filter((a) => a.kind === 'eta').length, 0, 'recovering then dipping again is still the same window: stay quiet')
+})
+
+test('eta re-arms only when the window actually rolls over', () => {
+  let state = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 25, resetAt: 'w1' }] })], TH, createUsageAlertState()).state
+  state = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 120, resetAt: 'w1' }] })], TH, state).state
+  const r = evaluateUsageAlerts([provider({ items: [{ label: '周额度', percent: 20, etaMinutes: 20, resetAt: 'w2' }] })], TH, state)
+  assert.equal(r.alerts.filter((a) => a.kind === 'eta').length, 1, 'a new window may remind once again')
+})
+
+test('a reading that flaps across the threshold fires exactly once', () => {
+  // 回归：真实历史里 agy-cli 的 7 天窗口在 82.3%~87.4% 之间横跳（阈值 85），
+  // 旧实现「跌破阈值就清记录」于是每轮 60 秒轮询都重新弹一次——10 轮弹 5 次。
+  let state = createUsageAlertState()
+  let fires = 0
+  for (const pct of [87.4, 82.3, 87.4, 82.3, 87.4, 82.3, 86.9, 82.5, 87.0, 83.4]) {
+    const r = evaluateUsageAlerts([provider({ items: [{ label: '7 天窗口', percent: pct, resetAt: 'w1' }] })], TH, state)
+    state = r.state
+    fires += r.alerts.length
+  }
+  assert.equal(fires, 1, 'hovering around the line is one event, not ten')
+})
+
+test('a genuinely drained quota (deep drop) does re-arm for the next window', () => {
+  // 与上面的抖动区分：跌到阈值以下 10 个百分点以外，说明额度确实被充值/重置，
+  // 允许下一次提醒。
+  let state = evaluateUsageAlerts([provider({ items: [{ label: '7 天窗口', percent: 90, resetAt: 'w1' }] })], TH, createUsageAlertState()).state
+  state = evaluateUsageAlerts([provider({ items: [{ label: '7 天窗口', percent: 20, resetAt: 'w1' }] })], TH, state).state
+  const r = evaluateUsageAlerts([provider({ items: [{ label: '7 天窗口', percent: 88, resetAt: 'w1' }] })], TH, state)
+  assert.equal(r.alerts.filter((a) => a.kind === 'threshold').length, 1, 'deep drop then climb back is a new event')
+})
+
+test('two same-provider windows never share a reminder key (agy-cli label collision)', () => {
+  // 回归：网关返回 `Gemini · 7 days`(87%) 与 `Claude & GPT · 7 days`(0%)，
+  // 旧标签把前缀丢掉、两条都变成「7 天窗口」，于是共用一个 key——高值那条
+  // 刚记下已提醒，同轮低值那条就把它清掉，用户每 60 秒被弹一次。
+  const p: UsageAlertProvider = {
+    id: 'magpie#agy-cli',
+    label: 'Magpie · agy-cli',
+    status: 'ok',
+    items: [
+      { label: 'Gemini 7 天窗口', percent: 87, resetAt: 'w-gemini' },
+      { label: 'Claude & GPT 7 天窗口', percent: 0, resetAt: 'w-claude' },
+    ],
+  }
+  let state = createUsageAlertState()
+  let fires = 0
+  for (let i = 0; i < 20; i++) {
+    const r = evaluateUsageAlerts([p], TH, state)
+    state = r.state
+    fires += r.alerts.length
+  }
+  assert.equal(fires, 1, 'distinct labels keep distinct records')
+  // 低值那条独立记账：它自己越线时还能提醒一次。
+  const r = evaluateUsageAlerts([{ ...p, items: [p.items[0]!, { label: 'Claude & GPT 7 天窗口', percent: 90, resetAt: 'w-claude' }] }], TH, state)
+  assert.equal(r.alerts.filter((a) => a.itemLabel === 'Claude & GPT 7 天窗口').length, 1)
 })
 
 test('an item that blinks out for one round does not re-fire when it comes back', () => {

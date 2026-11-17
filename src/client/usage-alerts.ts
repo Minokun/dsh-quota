@@ -1,16 +1,15 @@
 /**
  * 用量提醒状态机（纯逻辑，无 React / DOM 依赖，可单测）：
  * 从悬浮球冒出的「即将见底 / 预计耗尽」toast 的触发规则都在这里——
- * **每个条目在每个额度窗口内最多提醒一次**：
- * - threshold：条目已用百分比到达阈值时提醒一次；同窗口内无论继续涨
- *   多少都不再提醒，直到窗口重置（resetAt 变化，或数值回落到阈值以下
- *   后再次跨越）才允许下一次提醒。
- * - eta：按当前速率预计 30 分钟内耗尽时提醒一次，同一窗口只一次；
- *   回升到 60 分钟以上后重置。
+ * **每个条目在每个额度窗口内最多提醒一次**，触发后就不再打扰，直到窗口
+ * 真正翻页：
+ * - threshold：条目已用百分比首次到达阈值时提醒一次；同窗口内无论继续涨、
+ *   还是在阈值线上下来回抖，都不再提醒。
+ * - eta：按当前速率预计 30 分钟内耗尽时提醒一次，同一窗口只一次。
  * 状态由调用方持久化（localStorage），因此刷新页面不会重新弹一遍。
  * evaluateUsageAlerts 是纯函数：不改传入参数，返回新 state。
  *
- * 两条抗抖动约束（改动前请先看对应单测）：
+ * 三条抗抖动约束（改动前请先看对应单测）：
  * 1. **窗口身份按容差比较，不按字符串全等** —— 这是「总是弹出来」的真凶。
  *    上游网关给的 `resetsAt` 有秒级抖动（实测同一张 Codex 30 天窗口在
  *    `…16:47:11+08:00` 与 `…:12` 之间跳），字符串全等会把同一个窗口当成
@@ -23,6 +22,10 @@
  *    一次。现在只有 `lastPercent`（纯记账）随条目消失清理。
  *    （注：这条是防御性修复，不是本仓库日志里那次误弹的成因——历史采样受
  *    10 分钟节流，条目「缺样本」不等于「条目消失」。）
+ * 3. **回落到阈值以下不算新事件**。旧实现一跌破阈值就清掉提醒记录，于是
+ *    用量在 82%~87% 之间来回抖时**每轮轮询都重新弹一次**（真实历史里
+ *    agy-cli 的 7 天窗口就在 85% 线上反复横跳，10 轮弹 5 次）。现在只有
+ *    「窗口翻页」才会重新武装，见 {@link reminderHolds}。
  * @module dsh-quota/client/usage-alerts
  */
 
@@ -62,8 +65,18 @@ export interface UsageAlertProvider {
 
 /** eta 提醒的触发线：按当前速率预计在此分钟数内耗尽就提醒。 */
 export const ETA_ALERT_MINUTES = 30
-/** eta 提醒的恢复线：回升到超过此分钟数视为本窗口已缓解。 */
-export const ETA_RECOVER_MINUTES = 60
+
+/**
+ * threshold 提醒的恢复线：百分比要跌破 `alertPercent - THRESHOLD_RECOVER_MARGIN`
+ * 才算「额度真的回来了」，之后再次越线才允许下一次提醒。
+ *
+ * 为什么需要这段余量：上游读数在阈值附近本来就会抖（真实历史里 agy-cli 的
+ * 7 天窗口在 82.3% ~ 87.4% 之间横跳，alertPercent 是 85）。没有余量时
+ * 「跌破阈值就清记录」会让每一轮 60 秒轮询都重新弹一次——10 轮弹 5 次，
+ * 正是用户抱怨的「提醒太频繁」。取 10 个百分点：比抖动幅度大得多，又远小于
+ * 「额度被充值/重置」这种真·回落（通常一次性跌到个位数）。
+ */
+export const THRESHOLD_RECOVER_MARGIN = 10
 
 /**
  * 两个 `resetAt` 相差多少以内算同一个窗口。
@@ -113,6 +126,24 @@ export function createUsageAlertState(): UsageAlertState {
 }
 
 /**
+ * 是否仍然压住（不再触发）本窗口的提醒。
+ *
+ * 判据刻意只有「同一窗口」一条：
+ * - 百分比继续涨 → 还是同一个 key、同一个窗口，压住；
+ * - 百分比在阈值附近下探又回来 → 依然是同一个窗口，仍然压住（这是关键：
+ *   旧实现一跌破阈值就清记录，于是抖动一次弹一次）；
+ * - 窗口翻页（`resetAt` 变化且超出容差）→ 放行，允许下一次提醒。
+ * 只有跌得足够狠（{@link THRESHOLD_RECOVER_MARGIN}，即额度明显被充值/重置）
+ * 才额外清掉记录——那是真的「额度回来了」，与阈值附近的读数抖动两回事。
+ * @param shownWindow - 已提醒过的窗口标识。
+ * @param windowId - 本轮观测到的窗口标识。
+ * @returns true 表示本窗口已提醒过、不要再弹。
+ */
+export function reminderHolds(shownWindow: string | undefined, windowId: string): boolean {
+  return shownWindow !== undefined && sameWindow(shownWindow, windowId)
+}
+
+/**
  * 按最新平台行评估用量提醒（纯函数：不改 providers / state）。
  * 只返回**本轮新触发**的提醒；可见列表的保留/清除由调用方管理
  * （提醒记录已写入 state.shown，同窗口不会再次触发）。
@@ -139,17 +170,16 @@ export function evaluateUsageAlerts(
       const windowId = windowIdOf(item)
       if (item.percent !== undefined) {
         const pct = item.percent
-        if (pct < alertPercent) {
-          // 回落到阈值以下：视为窗口已重置，清掉提醒记录，
-          // 之后再次跨越允许下一次提醒。
+        const held = reminderHolds(shown.has(key) ? shown.get(key) : undefined, windowId)
+        if (pct < alertPercent - THRESHOLD_RECOVER_MARGIN) {
+          // 额度明显回来了（充值 / 重置 / 换窗口）：清掉提醒记录，
+          // 之后再次越线允许下一次提醒。注意阈值附近的小幅抖动走不到这里。
           shown.delete(key)
-        } else if (!shown.has(key) || !sameWindow(shown.get(key), windowId)) {
-          // 新窗口内的首次超标（或首次观测即超标）：提醒一次并记录窗口。
-          // 注意 has() 必须单独判：shown 里没有这条时 sameWindow(undefined,
-          // 'static') 会返回 true，把它当成「同窗口」就再也不提醒了。
+        } else if (pct >= alertPercent && !held) {
+          // 本窗口首次越线：提醒一次并记录窗口。
           alerts.push({ key, kind: 'threshold', providerId: p.id, providerLabel: p.label, itemLabel: item.label, percent: pct })
           shown.set(key, windowId)
-        } else if (shown.get(key) !== windowId) {
+        } else if (held && shown.get(key) !== windowId) {
           // 同一窗口、resetAt 只是抖了一下：把基准挪到最新值。否则抖动
           // 单向累积（每次 +1s）迟早会超出容差，又被当成新窗口。
           shown.set(key, windowId)
@@ -157,17 +187,13 @@ export function evaluateUsageAlerts(
         lastPercent.set(key, pct)
       }
       if (item.etaMinutes !== undefined) {
-        if (item.etaMinutes <= ETA_ALERT_MINUTES) {
+        const etaHeld = reminderHolds(firedEta.has(key) ? firedEta.get(key) : undefined, windowId)
+        if (item.etaMinutes <= ETA_ALERT_MINUTES && !etaHeld) {
           // 预计 30 分钟内耗尽：每个窗口只提醒一次。
-          if (!firedEta.has(key) || !sameWindow(firedEta.get(key), windowId)) {
-            alerts.push({ key, kind: 'eta', providerId: p.id, providerLabel: p.label, itemLabel: item.label, etaMinutes: item.etaMinutes })
-            firedEta.set(key, windowId)
-          } else if (firedEta.get(key) !== windowId) {
-            firedEta.set(key, windowId) // 同窗口的 resetAt 抖动：更新基准
-          }
-        } else if (item.etaMinutes > ETA_RECOVER_MINUTES) {
-          // 回升到 60 分钟以上：窗口缓解，清掉该条目的已发标记。
-          firedEta.delete(key)
+          alerts.push({ key, kind: 'eta', providerId: p.id, providerLabel: p.label, itemLabel: item.label, etaMinutes: item.etaMinutes })
+          firedEta.set(key, windowId)
+        } else if (etaHeld && firedEta.get(key) !== windowId) {
+          firedEta.set(key, windowId) // 同窗口的 resetAt 抖动：更新基准
         }
       }
     }
