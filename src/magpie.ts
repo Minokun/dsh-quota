@@ -171,18 +171,25 @@ export function magpieWindowItem(w: Record<string, unknown>): QuotaItem {
   }
 
   const percent = usedPercent ?? (remainingPercent !== undefined ? Number((100 - remainingPercent).toFixed(2)) : undefined)
+  const displayPercent = percent === undefined ? undefined : Number(percent.toFixed(2))
   return {
     label,
     ...(percent === undefined ? {} : { percent }),
-    ...(percent === undefined ? {} : { display: `已用 ${percent}%` }),
+    ...(displayPercent === undefined ? {} : { display: `已用 ${displayPercent}%` }),
     ...(resetAt ? { resetAt } : {}),
   }
 }
 
-/** 一行卡片的灰色注释：账号、有效期、续费状态。 */function magpieNote(cards: Array<Record<string, unknown>>): string | undefined {
+/**
+ * 一行卡片的补充数据：有效期与续费状态（仅同一 provider 挂了多个账号拆行时才
+ * 附带账号名用于区分，避免单账号卡片重复刷无意义的账号/组织行）。
+ */
+function magpieNote(cards: Array<Record<string, unknown>>, showUser = false): string | undefined {
   const parts: string[] = []
-  const user = cards.map((c) => str(c.user)).find(Boolean)
-  if (user) parts.push(`账号 ${user}`)
+  if (showUser) {
+    const user = cards.map((c) => str(c.user)).find(Boolean)
+    if (user) parts.push(`账号 ${user}`)
+  }
   const until = cards.map((c) => str(c.until)).find(Boolean)
   if (until) {
     // 只留日期：ISO 时间戳整段塞进注释会把行挤满。
@@ -299,7 +306,7 @@ export function parseMagpieQuotas(body: unknown): ProviderSnapshot[] {
       // 余额卡没有 user，只在单账号行（或多账号的第一行）上挂一次。
       if (index === 0) items.push(...balanceItems)
       if (items.length === 0) continue
-      const message = magpieNote([...group.cards, ...(index === 0 ? balanceCards : [])])
+      const message = magpieNote([...group.cards, ...(index === 0 ? balanceCards : [])], splitByUser)
       rows.push({
         id: rowId(provider, group.user),
         label,
@@ -433,7 +440,6 @@ export function mergeMagpieSpend(rows: ProviderSnapshot[], spends: readonly Magp
       label: `${MAGPIE_LABEL} · ${spend.provider}`,
       status: 'ok',
       via: 'api',
-      message: '按量计费的 API key 账号：无额度窗口，只有用量记账',
       items: [spendItem(spend)],
     })
   }

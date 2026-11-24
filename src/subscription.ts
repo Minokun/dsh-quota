@@ -293,7 +293,7 @@ export function parseCodexUsage(body: unknown): { items: QuotaItem[]; message?: 
   if (planType) messages.push(planType)
 
   const credits = obj(raw.credits)
-  if (credits && credits.has_credits !== undefined) {
+  if (credits && credits.has_credits === true) {
     items.push({
       label: 'Credits',
       display: credits.unlimited === true ? '无限' : (str(credits.balance) ?? '?'),

@@ -129,6 +129,8 @@ export function summarizeItems(provider: PanelProvider | undefined, lang: Lang =
 }
 
 /** What the panel renders. */
+import type { ModelSpeedSummary } from '../speed-sampler.ts'
+
 export interface QuotaPanelState {
   /** False until the first status read lands. */
   loaded: boolean
@@ -140,6 +142,11 @@ export interface QuotaPanelState {
   providers: PanelProvider[]
   /** 各额度条目最近的已用百分比序列（`${providerId}::${itemLabel}` → 升序采样），供 sparkline。 */
   trends: Record<string, number[]>
+  /**
+   * 逐模型测速结论（Host 被动采样自真实对话流）。认领到卡片由 speed-line.ts
+   * 负责；旧版 Host 不返回该字段时按空数组处理（卡片不显示测速行）。
+   */
+  speed?: ModelSpeedSummary[]
   keys: PanelKeyState
   /** Local form error. */
   formError: string
@@ -398,7 +405,7 @@ export class QuotaPanelController {
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; history?: Record<string, unknown>; speed?: ModelSpeedSummary[] }>('/status', undefined, this.lang())
       // /status 本就携带 history（host 时序采样），这里裁成每条目最近 30 个
       // 采样值存入 trends，供面板条目的 sparkline 使用。
       const trends: Record<string, number[]> = {}
@@ -420,6 +427,8 @@ export class QuotaPanelController {
         providerOrder: state.providerOrder ?? [],
         alertPercent: state.alertPercent ?? 85,
         trends,
+        // 被动测速：旧版 Host 不返回该字段 → 空数组，卡片不显示测速行。
+        speed: state.speed ?? [],
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})

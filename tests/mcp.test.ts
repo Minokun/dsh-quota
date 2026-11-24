@@ -55,7 +55,6 @@ test('bigmodel shows the coding subscription next to the account balance', () =>
   assert.deepEqual(items, [
     { label: 'GLM Coding Pro', display: '生效中 · 至 2028-03-28' },
     { label: '账户余额', display: '¥0' },
-    { label: '账户', display: 'mpvseed9' },
   ])
 })
 
@@ -63,7 +62,6 @@ test('bigmodel keeps the balance row when the subscription call returns nothing'
   const items = parseBigmodel({ basicCustomerInfo: { customerName: 'mpvseed9', balance: 12.5 } }, [])
   assert.deepEqual(items, [
     { label: '账户余额', display: '¥12.5' },
-    { label: '账户', display: 'mpvseed9' },
   ])
 })
 
@@ -171,7 +169,6 @@ test('runMcpAdapter reads BigModel through the batch executor instead of errorin
   assert.deepEqual(snapshot.items, [
     { label: 'GLM Coding Pro', display: '生效中 · 至 2028-03-28' },
     { label: '账户余额', display: '¥0' },
-    { label: '账户', display: 'mpvseed9' },
   ])
 })
 

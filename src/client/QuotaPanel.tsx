@@ -22,7 +22,7 @@ import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
 import { sessionCardNote, sessionCardVisible, sessionUsageRows, sessionUsageTotal } from './session-card.ts'
 import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
 import { billingLine } from './billing-line.ts'
-import { DEEPSEEK_ACCOUNT_REF } from './platform-map.ts'
+import { cardSpeedsOf, speedTone, type CardSpeedView } from './speed-line.ts'
 import { sparklinePoints } from './sparkline.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
@@ -123,6 +123,54 @@ function resetText(iso: string | undefined, t: TFn): string {
   return sameDay
     ? t('reset.today', { time })
     : t('reset.day', { date: `${d.getMonth() + 1}/${d.getDate()}`, time })
+}
+
+/** 主数字格式：>=100 取整，其余一位小数（499.6 → 500，86.24 → 86.2）。 */
+function formatSpeed(tps: number): string {
+  return tps >= 100 ? String(Math.round(tps)) : tps.toFixed(1)
+}
+
+/** 速度档位 → 数字颜色类（未定型时不加类，保持主文字色）。 */
+function toneClass(tone: ReturnType<typeof speedTone>): string {
+  return tone === undefined ? '' : `dq-speed-num--${tone}`
+}
+
+/**
+ * 卡片里的测速行。
+ *
+ * 排版原则：主数字（总吞吐）最大最亮，其余读数一律小字次级色——用户扫一眼
+ * 只需要知道「这个平台现在多快」，细节在 title 里。
+ */
+function SpeedRow({ speed, t }: { speed: CardSpeedView; t: TFn }) {
+  if (speed.kind === 'batched') {
+    return (
+      <div className="dq-speed dq-speed--batched" title={t('speed.batchedTitle')}>
+        <span className="dq-speed-label">{t('speed.label')}</span>
+        <span className="dq-speed-batched">{t('speed.batched')}</span>
+        <span className="dq-speed-meta">{t('speed.skipped', { n: speed.skipped })}</span>
+      </div>
+    )
+  }
+  const meta: string[] = []
+  if (speed.typical !== undefined) meta.push(t('speed.typical', { n: formatSpeed(speed.typical) }))
+  if (speed.ttftMs !== undefined) meta.push(t('speed.ttft', { ms: speed.ttftMs }))
+  if (speed.bodyTps !== undefined) meta.push(t('speed.body', { n: formatSpeed(speed.bodyTps) }))
+  meta.push(t('speed.samples', { n: speed.n }))
+  if (speed.skipped > 0) meta.push(t('speed.skipped', { n: speed.skipped }))
+  return (
+    <div className="dq-speed" title={`${t('speed.title')}\n${speed.model}`}>
+      <span className="dq-speed-label">{t('speed.label')}</span>
+      {speed.headline === undefined
+        ? <span className="dq-speed-meta">{t('speed.noUsage')}</span>
+        : (
+          <span className="dq-speed-main">
+            <span className={`dq-speed-value ${toneClass(speedTone(speed.headline))}`}>{formatSpeed(speed.headline)}</span>
+            <span className="dq-speed-unit">{t('speed.unit')}</span>
+          </span>
+        )}
+      <span className="dq-speed-meta">{meta.join(' · ')}</span>
+    </div>
+  )
 }
 
 /** Compact ETA label, e.g. "约 45 分钟后耗尽" / "depletes in ~2.3 h". */
@@ -722,7 +770,17 @@ export function QuotaPanel(props: QuotaPanelProps) {
                 )}
               </div>
             )}
-            {displayedProviders.map((p) => {
+            {(() => {
+              // 测速读数的排他认领：传入全量卡片与真实的 state.providerKeyRefs，每条模型
+              // 读数最多归属一张卡，没用过的卡片保持空白，绝不串台借用兄弟卡速度。
+              const activeModelId = activeProvider && activeModel ? `${activeProvider}/${activeModel}` : undefined
+              const cardSpeeds = cardSpeedsOf(
+                displayedProviders,
+                state.speed ?? [],
+                state.providerKeyRefs,
+                activeModelId,
+              )
+              return displayedProviders.map((p) => {
               const cardAlerts = providerAlertLines(p, state, t)
               const cardAlertCount = providerAlertCount(p, state)
               const isActiveCard = activeRowId !== '' && p.id === activeRowId
@@ -750,13 +808,28 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   {isActiveCard && (
                     <span className="dq-active-chip" title={modelFrom}>{t('provider.active')}</span>
                   )}
+                  {(() => {
+                    const speed = cardSpeeds[p.id]
+                    if (speed === undefined) return null
+                    if (speed.kind === 'batched') {
+                      return <span className="dq-speed-chip dq-speed-chip--batched" title={`${t('speed.batchedTitle')}\n${speed.model}`}>{t('speed.batched.short')}</span>
+                    }
+                    if (speed.headline === undefined) return null
+                    return (
+                      <span className="dq-speed-chip" title={`${t('speed.title')}\n${speed.model}`}>
+                        <span className={`dq-speed-chip-num ${toneClass(speedTone(speed.headline))}`}>{formatSpeed(speed.headline)}</span>
+                        <span className="dq-speed-chip-unit">{t('speed.unit')}</span>
+                      </span>
+                    )
+                  })()}
                   {cardAlertCount > 0 && (
                     <span className="dq-alert-chip" title={cardAlerts.join('\n')}>
                       {cardAlertCount > 1 ? `⚠ ${cardAlertCount}` : '⚠'}
                     </span>
                   )}
-                  {p.via && <span className={`dq-badge ${p.via === 'api' ? 'dq-badge--api' : 'dq-badge--mcp'}`}>{p.via === 'api' ? 'API' : 'MCP'}</span>}
-                  <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
+                  {p.status !== 'ok' && (
+                    <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
+                  )}
                   <button
                     type="button"
                     className="dq-btn dq-btn--ghost dq-probe"
@@ -772,13 +845,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
                     {state.probeResults[p.id]!.ok
                       ? t('probe.ok', { ms: state.probeResults[p.id]!.ms })
                       : t('probe.fail', { message: state.probeResults[p.id]!.message ?? '' })}
-                  </span>
-                )}
-                {/* 账号钱包卡没有 API key：那条「已同步 <ref>」的说明对它没有
-                    意义（ref 是合成值，不是环境变量）。 */}
-                {p.via === 'api' && p.keyRef && p.keyRef !== DEEPSEEK_ACCOUNT_REF && (
-                  <span className="dq-provider-key" title={t('provider.syncedTitle', { ref: p.keyRef, source: sourceText(p.keySource, t) })}>
-                    {t('provider.synced', { ref: p.keyRef, source: sourceText(p.keySource, t) })}
                   </span>
                 )}
                 {p.message && <span className="dq-provider-msg">{p.message}</span>}
@@ -826,7 +892,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
                           )}
                           <span className="dq-item-value">
                             {value}
-                            {percent !== undefined && item.remaining !== undefined ? ` ${t('item.remaining', { n: item.remaining })}` : ''}
+                            {percent !== undefined && item.remaining !== undefined && !value.includes('剩') && (
+                              <span className="dq-item-sub"> {t('item.remaining', { n: item.remaining })}</span>
+                            )}
                           </span>
                           {overThreshold && (
                             <span className="dq-item-alert" title={t('alert.usage', { label: p.label, item: item.label, percent: Math.round(percent ?? 0) })}>{'⚠'}</span>
@@ -842,9 +910,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
                     })}
                   </div>
                 )}
+                {(() => {
+                  const speed = cardSpeeds[p.id]
+                  if (speed === undefined) return null
+                  return <SpeedRow speed={speed} t={t} />
+                })()}
               </div>
               )
-            })}
+            }) })()}
 
             <div className="dq-keys">
               <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleKeys() }}>

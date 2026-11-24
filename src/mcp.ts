@@ -271,8 +271,6 @@ const bigmodel: McpAdapter = {
       })[0] as Record<string, unknown> | undefined
       const balance = num(info?.balance)
       if (balance !== undefined) items.push({ label: '账户余额', display: `¥${balance}` })
-      const customer = str(info?.customerName)
-      if (customer) items.push({ label: '账户', display: customer })
     }
     if (items.length === 0) items.push({ label: '原始返回', display: JSON.stringify(results).slice(0, 200) })
     return items

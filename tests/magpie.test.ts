@@ -73,9 +73,12 @@ test('a real agy-cli payload yields one distinct label per pool', () => {
   const labels = rows[0]?.items.map((i) => i.label) ?? []
   assert.deepEqual(labels, ['Gemini 7 天窗口', 'Gemini 5 小时窗口', 'Claude & GPT 7 天窗口', 'Claude & GPT 5 小时窗口'])
   assert.equal(new Set(labels).size, 4)
-  // 越线的是 Gemini 那条：87.47% 必须还挂在正确条目上。
+  // 越线的是 Gemini 那条：87.47% 必须还挂在正确条目上，且 display 收口为两位小数。
   assert.equal(rows[0]?.items[0]?.percent, 87.470147)
+  assert.equal(rows[0]?.items[0]?.display, '已用 87.47%')
   assert.equal(rows[0]?.items[2]?.percent, 0)
+  // 单账号时不刷无意义的「账号 xxx」行。
+  assert.equal(rows[0]?.message, undefined)
 })
 
 // ── 单项三车道 ───────────────────────────────────────────────────────────────
@@ -150,12 +153,14 @@ test('one row per provider, and the balance card merges into its plan row', () =
   assert.equal(zhipu?.label, 'Magpie · Zhipu GLM · pro')
 })
 
-test('a row carries the account and expiry as the gray note', () => {
+test('a row carries expiry/renewal notes, and only adds account name when split across multiple accounts', () => {
   const rows = parseMagpieQuotas(REAL_BODY)
   const zcode = rows.find((r) => r.id === `${MAGPIE_PLATFORM_ID}#zcode`)
-  assert.equal(zcode?.message, '账号 ZCode · 有效期至 2027-03-27 · 不自动续费')
+  assert.equal(zcode?.message, '有效期至 2027-03-27 · 不自动续费')
+  const codex = rows.find((r) => r.id === `${MAGPIE_PLATFORM_ID}#codex`)
+  assert.equal(codex?.message, undefined)
   const kimi = rows.find((r) => r.id === `${MAGPIE_PLATFORM_ID}#kimi`)
-  assert.equal(kimi?.message, undefined, '没有账号/有效期信息时不留空注释')
+  assert.equal(kimi?.message, undefined, '没有有效期信息时不留空注释')
 })
 
 test('every row is ok/api so the panel never shows a red magpie card', () => {
@@ -186,6 +191,7 @@ test('two accounts under one provider split into two rows', () => {
     ],
   })
   assert.deepEqual(rows.map((r) => r.id), [`${MAGPIE_PLATFORM_ID}#claude/a@x.com`, `${MAGPIE_PLATFORM_ID}#claude/b@x.com`])
+  assert.deepEqual(rows.map((r) => r.message), ['账号 a@x.com', '账号 b@x.com'])
   assert.deepEqual(rows.map((r) => r.items[0]?.percent), [10, 40])
 })
 

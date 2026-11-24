@@ -30,6 +30,7 @@ import { MAGPIE_PLATFORM_ID, dropDuplicateSubscriptionRows, fetchMagpieRows, mag
 import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, fetchArkRows, fetchArkUsage, parseArkKeyPair, resolveArkKeyPair } from './ark.ts'
 import { platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
+import type { ModelSpeedSummary } from './speed-sampler.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
 
@@ -314,6 +315,14 @@ export interface QuotaControllerFace {
   loginDone(platform: string): Promise<Config>
   /** One-shot connectivity probe for one platform card (latency + error). */
   probe(platform: string): Promise<{ ok: boolean; ms: number; message?: string }>
+  /**
+   * 挂上被动测速的取数回调（Host 侧采样器提供）。面板 /status 每次都会
+   * 调它取最新读数，所以这里只存函数、不缓存结果。
+   * @param source - 返回逐模型测速结论的回调。
+   */
+  setSpeedSource(source: () => ModelSpeedSummary[]): void
+  /** 当前逐模型测速结论（面板 /status 每次现取）。 */
+  speed(): ModelSpeedSummary[]
 }
 
 export class QuotaController implements QuotaControllerFace {
@@ -336,6 +345,23 @@ export class QuotaController implements QuotaControllerFace {
     ctx.effect(() => () => {
       if (this.retryTimer !== undefined) clearTimeout(this.retryTimer)
     })
+  }
+
+  /** 被动测速取数回调（Host 采样器挂上；未挂时面板不显示测速行）。 */
+  private speedSource: (() => ModelSpeedSummary[]) | undefined
+
+  /** @inheritdoc */
+  setSpeedSource(source: () => ModelSpeedSummary[]): void {
+    this.speedSource = source
+  }
+
+  /** 当前逐模型测速结论；旧版 Host 没挂回调时为空数组。 */
+  speed(): ModelSpeedSummary[] {
+    try {
+      return this.speedSource?.() ?? []
+    } catch {
+      return []
+    }
   }
 
   /** In-flight refresh, for the single-flight guard. */
@@ -789,13 +815,13 @@ export class QuotaController implements QuotaControllerFace {
             await sleep(FETCH_RETRY_DELAY_MS)
             return probeOnce()
           })
-          // 火山方舟的「在线」正是这条兜底：ARK_API_KEY 只能调模型，套餐
-          // 额度在控制面 OpenAPI（需 AK/SK），把原因直接写在卡片上。
+          // 火山方舟的「在线」保留简短可操作提示（套餐用量需 AK/SK）；其余探活成功行
+          // 下方已有「模型服务 · 在线」，不再重复打解释文字。
           const probeNote = platformForProvider(lp.id) === ARK_PLATFORM_ID
-            ? '模型可用，但查不到额度：火山方舟套餐用量需火山引擎 AK/SK 签名的 OpenAPI（ARK_API_KEY 只能探活）'
-            : '该平台无 API-key 额度接口，仅探测服务可用性'
+            ? '套餐用量需配置火山引擎 AK/SK（ARK_API_KEY 仅可探活）'
+            : undefined
           providers.push(resp.ok
-            ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, message: probeNote, items: [{ label: '模型服务', display: '在线' }] }
+            ? { id: rowId, label: lp.label, status: 'ok', via: 'api', keyRef: key.ref, keySource: key.source, ...(probeNote ? { message: probeNote } : {}), items: [{ label: '模型服务', display: '在线' }] }
             : { id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败 HTTP ${resp.status}`, items: [] })
         } catch (error) {
           providers.push({ id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败：${error instanceof Error ? error.message : String(error)}`, items: [] })

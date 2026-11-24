@@ -188,6 +188,13 @@ export const PANEL_CSS = `
    （双类选择器压过 .dq-provider-key 的 nowrap，与书写顺序无关）。 */
 .dq-provider-key.dq-session-billing { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
 .dq-provider-name { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 头部右侧的测速徽标（收起/展开都在）：只有数字是亮的。 */
+.dq-speed-chip {
+  flex: none; display: flex; align-items: baseline; gap: 2px;
+  padding: 1px 6px; border-radius: 6px; background: rgba(128,128,128,0.12);
+}
+.dq-speed-chip-num { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-primary, #eee); }
+.dq-speed-chip-unit { font-size: 9px; color: var(--dsw-alias-label-tertiary, #777); }
 .dq-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .dq-badge--ok { background: rgba(61, 220, 132, 0.16); color: #3ddc84; }
 .dq-badge--error { background: rgba(231, 76, 60, 0.14); color: #e74c3c; }
@@ -224,15 +231,43 @@ export const PANEL_CSS = `
   font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;
   font-size: 13px; font-weight: 650; letter-spacing: -0.2px;
 }
+/* 剩余量是辅助信息：跟在主数字后面，小一号、次级色，别和主数字抢。 */
+.dq-item-sub { font-size: 10px; font-weight: 400; color: var(--dsw-alias-label-tertiary, #777); margin-left: 2px; letter-spacing: 0; }
 /* 趋势 sparkline：默认次级色，越阈值条目随告警变红。 */
 .dq-item-spark { flex: none; color: var(--dsw-alias-label-tertiary, #777); }
 .dq-item--alert .dq-item-spark { color: #e74c3c; }
 /* 越阈值条目：数值标红加粗 + ⚠ 标记（阈值可配，故不依赖 60/85 的固定色档）。 */
 .dq-item--alert .dq-item-value { color: #e74c3c; font-weight: 700; }
+/* 主数字的三档速度色（正常/偏慢/极慢）：只给数字上色，不铺底色。 */
+.dq-speed-num--fast { color: #3ddc84; }
+.dq-speed-num--mid { color: #f5a623; }
+.dq-speed-num--slow { color: #e74c3c; }
 .dq-item--alert .dq-item-label { color: #e74c3c; }
 .dq-item-alert { flex: none; font-size: 10px; color: #e74c3c; cursor: help; }
 .dq-item-reset { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; }
 .dq-item-eta { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; font-variant-numeric: tabular-nums; }
+
+/* ── 卡片测速行（被动采样）─────────────────────────────────────────────────
+   样式上刻意比额度条目更收敛：它是一行结论 + 一个主数字，不是另一张表。
+   批式档不画数字，只给一句结论——那种情况根本没有可信的 tok/s。 */
+.dq-speed {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding-top: 5px; border-top: 1px dashed var(--dsw-alias-border-l2, rgba(128,128,128,0.22));
+}
+.dq-speed-label { flex: none; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); letter-spacing: 0.3px; }
+.dq-speed-main { flex: none; display: flex; align-items: baseline; gap: 3px; }
+/* 主数字：比额度条目值再大一档（16px/700），这是卡片里的视觉重心。 */
+.dq-speed-value {
+  font-size: 16px; font-weight: 700; line-height: 1.1;
+  color: var(--dsw-alias-label-primary, #eee);
+  font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;
+  letter-spacing: -0.4px;
+}
+.dq-speed-unit { font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); }
+.dq-speed-meta { flex: 1 1 auto; min-width: 0; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); font-variant-numeric: tabular-nums; word-break: break-word; }
+/* 批式档：一句话，暖色，不给数字。 */
+.dq-speed--batched .dq-speed-batched { font-size: 11px; font-weight: 600; color: #f5a623; }
+.dq-speed--batched .dq-speed-meta { flex: 1 1 100%; }
 
 .dq-keys { border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.2)); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .dq-keys-toggle {

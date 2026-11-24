@@ -22,6 +22,9 @@ import { configuredMcpServers } from './dsh-config.ts'
 import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
 import { registerTools } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
+import { PassiveSpeedSampler } from './speed-sampler-host.ts'
+import { toModelSpeedSummary } from './speed-sampler.ts'
+import { loadSpeedFile, saveSpeedFile, speedFilePath } from './speed-store.ts'
 
 export { Config }
 
@@ -30,6 +33,9 @@ export const inject = ['tools']
 
 /** Delay before the first automatic refresh (lets MCP servers connect). */
 const BOOT_REFRESH_DELAY_MS = 5000
+
+/** 测速统计落盘节流：每次模型调用都会更新累计值，但不能每次调用都写盘。 */
+const SPEED_SAVE_THROTTLE_MS = 15_000
 
 /** Debounce for credential-change refreshes (a batch of sets = one refresh). */
 const CREDENTIAL_REFRESH_DEBOUNCE_MS = 800
@@ -170,6 +176,41 @@ export function apply(ctx: Context, config: Config): void {
     // 对应平台才会被查询；loader 服务不可用时返回 undefined，退回工具注册表探测。
     () => configuredMcpServers(ctx),
   )
+  // ── 被动测速 ──────────────────────────────────────────────────────────────
+  // 订阅真实对话的流式帧（`agent/assistant-stream`），按模型累计读数。写入频率
+  // 是每次模型调用一次，所以落盘做 15s 节流；采样失败绝不影响插件其它功能。
+  let speedSaveTimer: ReturnType<typeof setTimeout> | undefined
+  const speedPath = speedFilePath()
+  const sampler = new PassiveSpeedSampler(() => {
+    if (speedSaveTimer !== undefined) return
+    speedSaveTimer = setTimeout(() => {
+      speedSaveTimer = undefined
+      void persistSpeed()
+    }, SPEED_SAVE_THROTTLE_MS)
+    // 定时器不该把进程钉住：dsh 退出时允许它被丢弃，下次启动重新累计。
+    speedSaveTimer.unref?.()
+  })
+  const speedSummaries = (): ReturnType<typeof toModelSpeedSummary>[] =>
+    sampler.acc.all().map(({ model, stats }) => toModelSpeedSummary(model, stats))
+  const persistSpeed = async (): Promise<void> => {
+    try {
+      const rows = sampler.acc.all()
+      if (rows.length === 0) return
+      await saveSpeedFile(speedPath, Object.fromEntries(rows.map(({ model, stats }) => [
+        model,
+        { stats, recent: (stats.lastAt === undefined ? [] : [[stats.lastAt, stats.lastTps ?? 0]]) as Array<[number, number]> },
+      ])))
+    } catch (error) {
+      ctx.logger.warn(`quota: speed stats not saved: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  quota.setSpeedSource(speedSummaries)
+  sampler.install(ctx)
+  // 启动时把上次积累的读数读回来（同一模型就地合并，不覆盖新样本）。
+  void loadSpeedFile(speedPath).then((saved) => {
+    sampler.acc.hydrate(saved)
+  }).catch(() => undefined)
+
   registerTools(ctx, quota)
 
   ctx.inject(['settings'], (sctx) => {

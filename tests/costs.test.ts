@@ -44,7 +44,7 @@ test('openai-admin adapter uses the Admin API costs endpoint with a Bearer key',
     ['近 7 天消耗', '$2.75'],
     ['近 30 天消耗', '$4.25'],
   ])
-  assert.equal(snapshot.message, 'Admin API：仅用量/成本，余额见 OpenAI 后台')
+  assert.equal(snapshot.message, undefined)
 })
 
 test('anthropic-admin adapter sends x-api-key + anthropic-version and converts cents to USD', async () => {

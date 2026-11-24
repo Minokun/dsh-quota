@@ -14,7 +14,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 **截图里都是什么：**
 
 - **右下角的「会员额度」悬浮球**：圆点表示整体状态（绿 = 全部正常 / 黄 = 部分异常 / 红 = 全部失败），旁边是上次刷新时间；点击展开/收起面板，打开时数据超过 5 分钟会自动后台刷新；**按住可拖拽到屏幕任意位置**（位置自动记住，拖到上半屏时面板改为向下展开）
-- **每个平台一张卡片**：右上两个徽标——`API` = 官方 API 直查（key 自动同步自 DSH 凭证域，下方灰色小字显示用的是哪个凭证引用，例如 `⇄ 已同步 KIMI_CODING_API_KEY · DSH 凭证`），`MCP` = 通过已注册的 MCP 服务器查询；`正常` / `失败` / `未配 Key` 是本次查询状态
+- **每个平台一张卡片**：仅展示有价值的额度、余额与实测速度数据——正常态隐去冗余的传输通道（`API` / `MCP`）、`正常` 徽标与凭证同步小字（管理 Key 仍在底部折叠区查看），仅在 `失败` / `未配 Key` 等异常态提示状态；当前正在使用的卡片原位显示「在用」标记，跑过流式对话的卡片自动展示实测吞吐（`tok/s`）与次级速度指标
 - **彩色进度条**：用量占比（<60% 绿 / 60–85% 黄 / >85% 红），右侧是 `已用 / 上限 剩xx`，下方小字是额度窗口的重置时间
 - **头部「刷新」按钮**：立即重新查询所有平台；面板底部「API Key 管理」折叠区可手动补 key（一般不需要——DSH 里加过的 key 会自动同步过来）
 
@@ -31,6 +31,7 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 - **手动 Key 兜底**：面板里可手动保存 key（存于 DSH 凭证域的插件私有引用，删除不影响 DSH 模型配置）
 - **消耗速率与剩余时长预估**：本地时序采样（≥10 分钟一个点、保留 14 天，落盘到 `$DSH_HOME/dsh-quota/history.json`，重启不清零），在当前配额窗口段上计算平均消耗速率（%/h），条目下方给出「约 x 小时后耗尽」预估；窗口重置自动截断分段，不会跨重置算出错误速率；`quota_refresh` 工具同步透出
 - **余额型平台的「近 7 天消耗 / 余额还能撑多久」**：余额条目按**日历时间**口径算——近 7 天实测余额降幅 ÷ 跨度（闲置时间也算进分母）得到真实日均，再外推 7 天花费与余额耗尽时间。样本跨度不足 24 小时不显示（几十分钟的活跃速率外推一周会放大 3 倍左右，这正是「日均 ¥20 却被算成 ¥430/周」的来源）；跨度不足 7 天会标注「按 N 天实测折算」
+- **被动流式测速（零额外开销、过滤批式虚高）**：Host 侧被动订阅真实对话的 `agent/assistant-stream` 流式增量帧，以本端实际收到帧的墙钟时刻计时（防止网关重放历史时间戳产生负 TTFT），零额外探测请求、落盘到 `$DSH_HOME/dsh-quota/speed.json`（可用 `DSH_QUOTA_SPEED_FILE` 覆盖，重启不清零）。严格只计携带真实内容的增量帧（文本 / 推理 / 工具调用），且要求**增量帧 ≥ 4 且解码跨度 ≥ 250ms**——上游静默生成完一次性整段返回的「批式投递」直接标为「批式投递 · 不可测」并跳过，绝不编造几千 `tok/s` 的假数字。卡片标题栏徽标与底部测速行展示总吞吐（`ΣoutputTokens / Σdecode`，绿 ≥200 / 黄 ≥80 / 红 <80），附带 token 加权中位数（`典型`）、首字中位延迟（`首字 ms`）与整条体感速度（`体感`）；测速按卡片排他归属（Magpie 三段式 `magpie-*/<owner>/<model>` 严格对应 `magpie#<owner>`，DeepSeek 登录态账号与 API Key 卡严格隔离），未实际调用过的卡片保持空白不串台
 - **一键测活**：每张卡片右上「测」按钮当场重跑该平台的查询，返回毫秒延迟（`✓ 320ms`）或上游原始错误；只读探测，不改动快照
 - **自定义端点安全校验**：接口地址必须是公网 HTTPS——拒绝内嵌用户名/密码、查询参数、`localhost`/`.local`/`.internal` 与回环/私有/链路本地/保留地址（含 IPv4/IPv6 字面量）；请求拒绝跟随 3xx 跳转、响应超过 256 KiB 直接失败，避免自定义平台被用来探测内网
 - **中英双语界面**：面板文案跟随 DSH 的语言设置（`ctx.locale` 服务）实时切换，缺失该服务时按浏览器语言自动判定；药丸/悬浮环/面板/错误提示/时间格式全部本地化（en 文案不含中文字符，有单测把关）
@@ -49,17 +50,17 @@ DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼
 
 - **额度窗口**：网关的 `5 hours` / `7 days` / `30 days` / `MCP · Month` 等窗口直接映射成「5 小时窗口」「7 天窗口」「30 天窗口」「MCP 月度额度」，`used` 即已用百分比；带 `limit` 的计数窗口（如 `0 / 1000`）照实显示原读数；带 `unit` + `balance` 的（如 Kimi 的 `Extra usage`）显示金额而非进度条
 - **用量记账**：每个账号追加一条「近 30 天消耗」（花费 + 调用次数，取自 `GET /v1/magpie/usage`）。**纯 API-key 供应商**（按量计费、没有订阅窗口的，如 sidrune）只在用量里有记录，插件会单独给它一行，否则它在面板上完全不可见
-- **卡片灰色注释**：账号名、套餐有效期、是否自动续费
-- **当前模型认领**：magpie 的所有行共用同一个凭证引用（一个网关 Key 背后是好几个账号），所以置顶按**模型 id 的 provider 前缀**认领（`codex/gpt-5.6-terra` → `magpie#codex`），不会永远把本机第一行顶到前面
+- **卡片灰色注释**：单账号行仅保留套餐有效期、不自动续费等高价值提示（同平台挂多账号拆成多行时才额外显示 `账号 xxx` 区分）；按量计费卡直接展示「近 30 天消耗」，窗口百分比最多保留两位小数
+- **当前模型与测速认领**：magpie 的所有行共用同一个凭证引用（一个网关 Key 背后是好几个账号），因此原位「在用」标记、悬浮球摘要与被动测速均按**模型 id 的内层 provider 前缀**认领（如 `magpie-anthropic/agy-cli/…` → `magpie#agy-cli`、`codex/gpt-5.6-terra` → `magpie#codex`），各子卡严格隔离、互不串台
 - **与内置订阅行去重**：`subscription.ts` 也会直连 `chatgpt.com` 读 `~/.codex/auth.json` 取 Codex 额度。magpie 收的是同一份登录态、且自带代理与 token 续期，所以 magpie 那行**查到了额度**时内置行自动让位（避免同一账号两张卡、其中一张在需要代理的网络里红成 `fetch failed`）；magpie 没接该账号或那行失败时，内置行照旧保留
 
 **OpenDesign（open-design.ai / Vela）**：额度同样**不在推理 API 上**——模型面 `amr-link.open-design.ai/v1` 只认 `sk-amr-…` 推理 key，没有任何额度路由；额度在**控制面** `amr-api.open-design.ai/api/v1`，且只认 `vela_ctrl_…` 控制面 key（任何网页都不印这个 key，由 vela CLI 设备授权签发）。所以凭证引用是 `OPENDESIGN_CONTROL_KEY`（别名 `VELA_CONTROL_KEY`），**不是**给模型供应商配的 `OPENDESIGN_API_KEY`：后者填进来只会得到 401，面板会直接告诉你这一点。
 
-**查 OD 额度必须先登录 Open Design**：那把 key 由 vela 的设备授权签发，没有任何网页会显示它。所以本插件不要求你手抄 key ——它每次刷新都直接读 vela 的登录态（`~/.amr/config.json` 的 `profiles.prod.controlKey`），变了就写回 DSH 凭证域，于是「在 Open Design 里登录 / 重新登录」就等于「面板恢复」，key 轮换也自动跟上。没登录时卡片不会消失，而是钉住显示「需要先登录 Open Design（vela CLI / 桌面版）才能查额度」，卡片上的灰字会写明本次读数用的是「Open Design 登录态」还是「DSH 凭证域」。查询路径：`GET /workspaces/current` 解析 workspaceId → `GET /workspaces/{id}/billing/preflight` 取额度窗口与钱包 → `GET /billing/summary` 补累计消费（拿不到只少一行）。卡片显示 `7 天窗口`（credits 与折算 USD）、**钱包余额**（负数即欠费，照实显示）、累计消费；窗口各自独立、**绝不相加**。多工作空间时用环境变量 `OPENDESIGN_WORKSPACE_ID` 钉住。注意别用 `/billing/coding-plan-usage`——那个端点对控制面 key 返回 401，`preflight` 才是能用的。
+**查 OD 额度必须先登录 Open Design**：那把 key 由 vela 的设备授权签发，没有任何网页会显示它。所以本插件不要求你手抄 key ——它每次刷新都直接读 vela 的登录态（`~/.amr/config.json` 的 `profiles.prod.controlKey`），变了就写回 DSH 凭证域，于是「在 Open Design 里登录 / 重新登录」就等于「面板恢复」，key 轮换也自动跟上。没登录时卡片不会消失，而是钉住显示「需要先登录 Open Design（vela CLI / 桌面版）才能查额度」。查询路径：`GET /workspaces/current` 解析 workspaceId → `GET /workspaces/{id}/billing/preflight` 取额度窗口与钱包 → `GET /billing/summary` 补累计消费（拿不到只少一行）。卡片显示 `7 天窗口`（credits 与折算 USD）、**钱包余额**（负数即欠费，照实显示）、累计消费；窗口各自独立、**绝不相加**。多工作空间时用环境变量 `OPENDESIGN_WORKSPACE_ID` 钉住。注意别用 `/billing/coding-plan-usage`——那个端点对控制面 key 返回 401，`preflight` 才是能用的。
 
 **火山方舟（Volcengine Ark）**：额度**不在推理 API 上**——`ARK_API_KEY`（`ark-…`）只能调模型，所以 DSH 里只配了它时，卡片只能探活显示「模型服务 在线」，这是设计如此、不是查询失败。套餐用量要走火山引擎**控制面 OpenAPI**（`open.volcengineapi.com`，`GetCodingPlanUsage` / `GetAgentPlanAFPUsage`，HMAC-SHA256 签名），必须用 **AccessKey ID + SecretAccessKey**：在面板底部「API Key 管理」里把两者按 `AK:SK`（或控制台给的合成串 `AK/SK`、整行 `AccessKeyID/SecretAccessKey: …`）填进「火山方舟 (AK/SK)」，插件会自动拆开，或直接写凭证引用 `VOLC_ACCESS_KEY_ID` / `VOLC_ACCESS_KEY_SECRET`（也认 `VOLC_ACCESS_KEY` / `VOLC_SECRET_KEY` 等别名）。AK/SK 建议用 IAM 子用户并只授 `ArkReadOnlyAccess`（只读）；Coding Plan 与 Agent Plan 共用同一对 AK/SK，插件先试 Coding Plan、未订阅时自动落到 Agent Plan。
 
-**国外官方平台（用量/成本口径）**：OpenAI 走组织 Admin API `/v1/organization/costs`（凭证引用 `OPENAI_ADMIN_KEY`，即 `sk-admin-…`），Anthropic 走 Admin `cost_report`（凭证引用 `ANTHROPIC_ADMIN_KEY`，即 `sk-ant-admin…`，请求带 `anthropic-version`、金额单位是「分」已自动换算）。两家都**没有余额查询接口**，卡片展示「今日 / 近 7 天 / 近 30 天消耗」，并在卡片上注明；普通 `sk-*` / 项目 key 会被上游拒绝，不是插件的问题。
+**国外官方平台（用量/成本口径）**：OpenAI 走组织 Admin API `/v1/organization/costs`（凭证引用 `OPENAI_ADMIN_KEY`，即 `sk-admin-…`），Anthropic 走 Admin `cost_report`（凭证引用 `ANTHROPIC_ADMIN_KEY`，即 `sk-ant-admin…`，请求带 `anthropic-version`、金额单位是「分」已自动换算）。两家都**没有余额查询接口**，卡片直接展示「今日 / 近 7 天 / 近 30 天消耗」；普通 `sk-*` / 项目 key 会被上游拒绝，不是插件的问题。
 
 **MCP 平台**（纯可选扩展，通过另行注册的 `mcp__*` 工具取数；本仓库不包含这些 MCP 服务器）：智谱 BigModel、通义千问（百炼）、超算互联网、TokenRouter、SupaWriter。没注册时对应平台自动隐藏。
 

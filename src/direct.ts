@@ -817,7 +817,7 @@ export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal)
     const calls = num(summary?.usageCount)
     items.push({
       label: '累计消费',
-      display: `${opendesignUsdText(consumed)}${calls !== undefined ? ` · ${thousands(calls)} 次调用` : ''}`,
+      display: `${opendesignUsdText(consumed)}${calls !== undefined && calls > 0 ? ` · ${thousands(calls)} 次调用` : ''}`,
     })
   }
 
@@ -831,17 +831,11 @@ export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal)
   }
 
   const tier = str((plan as Record<string, unknown> | undefined)?.tier)
-  const funding = str(preflight.funding)
-  const notes: string[] = [`workspace ${workspace}`]
-  if (funding !== undefined) notes.push(`计费来源 ${funding}`)
-  // 让面板说清这把 key 是哪儿来的：复用 OD 登录态还是 DSH 凭证域里手填的。
-  notes.push(fromVela !== undefined ? '凭证复用 Open Design 登录态' : '凭证来自 DSH 凭证域')
   return {
     id: 'opendesign',
     label: tier !== undefined && tier.length > 0 ? `OpenDesign · ${tier}` : 'OpenDesign',
     status: 'ok',
     via: 'api',
-    message: notes.join(' · '),
     items,
   }
 }
@@ -935,7 +929,6 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     endpoint: 'https://api.openai.com/v1/organization/costs',
     format: 'openai-costs',
     adminOnly: true,
-    note: 'Admin API：仅用量/成本，余额见 OpenAI 后台',
     buildUrl: (now) => `https://api.openai.com/v1/organization/costs?start_time=${String(Math.floor(now / 1000) - 30 * 86400)}&bucket_width=1d&limit=31`,
   }),
   entry({
@@ -947,7 +940,6 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     auth: 'x-api-key',
     headers: { 'anthropic-version': '2023-06-01', 'User-Agent': UA },
     adminOnly: true,
-    note: 'Admin API：仅用量/成本（无余额接口）',
     buildUrl: (now) => `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${new Date(now - 30 * 86400_000).toISOString()}&bucket_width=1d&limit=31`,
   }),
 ]

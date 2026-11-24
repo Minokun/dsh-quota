@@ -1,6 +1,6 @@
 /**
  * HTTP routes for the browser panel, served under /plugins/dsh-quota/api.
- * GET  /status            — current snapshot + key state + custom platforms + formats
+ * GET  /status            — current snapshot + key state + custom platforms + formats + per-model speed
  * POST /refresh           — trigger a refresh (CSRF header required)
  * POST /keys              — store one platform API key into the credentials domain
  * POST /keys/remove       — remove one platform API key
@@ -33,7 +33,7 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') {
-      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls(), keyPlatforms: quota.keyPlatforms() })
+      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls(), keyPlatforms: quota.keyPlatforms(), speed: quota.speed() })
     }
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
