@@ -22,6 +22,7 @@ import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
 import { sessionCardNote, sessionCardVisible, sessionUsageRows, sessionUsageTotal } from './session-card.ts'
 import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
 import { billingLine } from './billing-line.ts'
+import { DEEPSEEK_ACCOUNT_REF } from './platform-map.ts'
 import { sparklinePoints } from './sparkline.ts'
 import { translate, type LocaleKey, type TFn } from './locale.ts'
 
@@ -559,7 +560,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
                       : t('probe.fail', { message: state.probeResults[p.id]!.message ?? '' })}
                   </span>
                 )}
-                {p.via === 'api' && p.keyRef && (
+                {/* 账号钱包卡没有 API key：那条「已同步 <ref>」的说明对它没有
+                    意义（ref 是合成值，不是环境变量）。 */}
+                {p.via === 'api' && p.keyRef && p.keyRef !== DEEPSEEK_ACCOUNT_REF && (
                   <span className="dq-provider-key" title={t('provider.syncedTitle', { ref: p.keyRef, source: sourceText(p.keySource, t) })}>
                     {t('provider.synced', { ref: p.keyRef, source: sourceText(p.keySource, t) })}
                   </span>

@@ -63,7 +63,7 @@ export const CUSTOM_RESPONSE_MAX_BYTES = 256 * 1024
  * 302s to an internal address would otherwise defeat the host check — and
  * applies the tighter 256 KiB cap.
  */
-async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal, opts: { strict?: boolean } = {}): Promise<unknown> {
+export async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal, opts: { strict?: boolean } = {}): Promise<unknown> {
   const maxBytes = opts.strict === true ? CUSTOM_RESPONSE_MAX_BYTES : 1024 * 1024
   const resp = await fetch(url, { headers, signal, ...(opts.strict === true ? { redirect: 'error' as const } : {}) })
   if (!resp.ok) {
@@ -574,7 +574,7 @@ function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) 
 const ZHIPU_ACCOUNT_REPORT_URL = 'https://open.bigmodel.cn/api/biz/account/query-customer-account-report'
 
 /** CNY 金额：两位小数、去掉多余的 0（0 → ¥0、214.908478 → ¥214.91）。 */
-function cny(v: number): string {
+export function cny(v: number): string {
   const rounded = Math.round(v * 100) / 100
   return `¥${rounded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }

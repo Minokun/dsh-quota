@@ -22,6 +22,22 @@ export const ARK_PLATFORM_ID = 'volcark'
 export const MAGPIE_PLATFORM_ID = 'magpie'
 
 /**
+ * DeepSeek「登录态账号」钱包卡片使用的合成凭证引用。
+ *
+ * DSH 有两个 DeepSeek 路由：`deepseek-official`（API key）与
+ * `deepseek-account`（登录态）。它们背后是两个钱包——别人的 key 看到的是
+ * 别人账号的余额——所以账号钱包必须单独成卡，并有一个稳定的 ref 供
+ * `providerKeyRefs` 精确认领；账号路由自身没有 `apiKeyEnv`，就用这个合成值。
+ *
+ * 放在这里（而不是 `deepseek-account.ts`）：浏览器半边也要认这张卡，而那个
+ * 模块依赖 `@deepseek-ai/dsh-credentials` 与 node 侧网络设施，不能进 bundle。
+ */
+export const DEEPSEEK_ACCOUNT_REF = 'DEEPSEEK_ACCOUNT'
+
+/** 账号钱包卡片的标签后缀：`DeepSeek · 账号`。 */
+export const DEEPSEEK_ACCOUNT_LABEL = '账号'
+
+/**
  * Map a model-provider id onto a quota platform id.
  * @param provider - DSH 模型供应商 id（不区分大小写）。
  * @returns 面板平台 id；没有对应平台时返回空串。

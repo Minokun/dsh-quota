@@ -16,6 +16,12 @@ import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
 import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, opendesignVelaControlKey, type DirectAdapter } from './direct.ts'
+import {
+  DEEPSEEK_ACCOUNT_LABEL,
+  DEEPSEEK_ACCOUNT_REF,
+  fetchDeepSeekAccountItems,
+  readDeepSeekAccountToken,
+} from './deepseek-account.ts'
 import { burnInsight, itemKey, mergeHistory, recordSamples, spendInsight, type HistoryMap } from './insights.ts'
 import { historyFilePath, loadHistoryFile, saveHistoryFile } from './history-file.ts'
 import { MCP_ADAPTERS, customAdapter, runMcpAdapter, selectConfiguredAdapters, type McpAdapter } from './mcp.ts'
@@ -354,6 +360,45 @@ export class QuotaController implements QuotaControllerFace {
   }
 
   /**
+   * One card for the signed-in DeepSeek account's wallet.
+   *
+   * 账号钱包和 API-key 钱包是两回事：`DEEPSEEK_API_KEY` 可能是别人账号的
+   * key，查出来的是别人的余额。这张卡只认登录态（`x-dsh-auth-token`），
+   * 所以它显示的一定是「当前登录的这个账号」的钱。
+   *
+   * 失败时绝不退化成 ¥0：拿不到就报错（登录过期说清楚要重新登录），
+   * 因为「钱包是 0」和「没读到钱包」对用户是完全不同的信息。
+   * @param token - 已解析出的账号 grant token。
+   * @returns 账号卡片快照（成功或带原因的失败）。
+   */
+  private async deepseekAccountJob(token: string): Promise<ProviderSnapshot> {
+    const id = `deepseek#${DEEPSEEK_ACCOUNT_REF}`
+    const label = `DeepSeek · ${DEEPSEEK_ACCOUNT_LABEL}`
+    const ok = (items: QuotaItem[]): ProviderSnapshot => ({
+      id, label, status: 'ok', via: 'api', keyRef: DEEPSEEK_ACCOUNT_REF, keySource: 'account', items,
+    })
+    const fail = (message: string): ProviderSnapshot => ({
+      id, label, status: 'error', message, via: 'api', keyRef: DEEPSEEK_ACCOUNT_REF, keySource: 'account', items: [],
+    })
+    const read = async (): Promise<QuotaItem[]> =>
+      fetchDeepSeekAccountItems(token, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+    try {
+      return ok(await read())
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 401 = 登录态失效，与「没配 key」是两码事，别让用户去翻凭证设置。
+      if (/^HTTP 401/.test(message)) return fail('DeepSeek 账号登录已失效，请在 DSH 账号页重新登录')
+      if (!isTransientFailure(message)) return fail(message)
+      await sleep(FETCH_RETRY_DELAY_MS)
+      try {
+        return ok(await read())
+      } catch (retryError) {
+        return fail(retryError instanceof Error ? retryError.message : String(retryError))
+      }
+    }
+  }
+
+  /**
    * Built-in MCP adapters restricted to the servers DSH's composition
    * declares (plus user-declared custom platforms, which are themselves DSH
    * config). A built-in platform whose server DSH does not run is not
@@ -476,8 +521,15 @@ export class QuotaController implements QuotaControllerFace {
       // ZAI_CODING_CN_API_KEY + ZHIPU_API_KEY, or DEEPSEEK_API_KEY +
       // DEEPSEEK_B_API_KEY via a second DSH provider route) render as two
       // cards, and the model→platform correspondence can key on the exact ref.
-      const runDirect = async (adapter: DirectAdapter, pinned: boolean, hints: readonly PlatformRefHint[] = []): Promise<ProviderSnapshot[]> => {
-        const labelOf = (base: string, ref: string): string => refRowLabel(base, ref, hints)
+      //
+      // `suffixRef` forces every row to carry its ref: once the signed-in
+      // ACCOUNT card sits beside the key cards (two different DeepSeek
+      // wallets), a bare "DeepSeek" label no longer says whose money it is.
+      const runDirect = async (adapter: DirectAdapter, pinned: boolean, hints: readonly PlatformRefHint[] = [], suffixRef = false): Promise<ProviderSnapshot[]> => {
+        const labelOf = (base: string, ref: string): string => {
+          const tagged = refRowLabel(base, ref, hints)
+          return suffixRef && tagged === base ? `${base} · ${ref}` : tagged
+        }
         const keys: ResolvedKey[] = []
         const seen = new Set<string>()
         for (const ref of [...adapter.keyRefs, ...adapter.envKeys, ...hints.map((hint) => hint.ref)]) {
@@ -499,7 +551,8 @@ export class QuotaController implements QuotaControllerFace {
             items: [],
           }]
         }
-        const multi = keys.length > 1
+        // `suffixRef` 也强制加后缀：账号卡在场时，key 卡必须自带 ref 才区分得开。
+        const multi = keys.length > 1 || suffixRef
         return Promise.all(keys.map(async (key): Promise<ProviderSnapshot> => {
           const id = multi ? `${adapter.id}#${key.ref}` : adapter.id
           const label = labelOf(adapter.label, key.ref)
@@ -540,10 +593,25 @@ export class QuotaController implements QuotaControllerFace {
       const directVisible = (a: DirectAdapter): boolean =>
         gate === undefined || gate.platforms.has(a.id) || [...a.keyRefs, ...a.envKeys].some((r) => gate.refs.has(r))
 
+      // DeepSeek 登录态钱包（见 deepseek-account.ts）：账号路由与 API-key 路由
+      // 是两个钱包，别人的 key 查出来的是别人的余额。登录了就单独成卡，
+      // 并且排在最前 —— 当前模型走账号路由时，认领必须命中这张。
+      const accountToken = await readDeepSeekAccountToken(credentials)
+      const deepseekInPlay = gate === undefined || gate.platforms.has('deepseek')
+      const showDeepseekAccount = accountToken !== undefined && deepseekInPlay
+
       const directJobs = [
+        ...showDeepseekAccount ? [this.deepseekAccountJob(accountToken)] : [],
         // Built-ins are all auto-discovered now: no key → no row. Only
         // user-declared custom platforms stay pinned (explicit user intent).
-        ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(a, false, platformRefHints(a, llmProviders))),
+        ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(
+          a,
+          false,
+          platformRefHints(a, llmProviders),
+          // 账号卡在场时，DeepSeek 的 key 卡必须自报 ref，否则「DeepSeek」
+          // 这张卡看不出是哪个账号的钱包。
+          showDeepseekAccount && a.id === 'deepseek',
+        )),
         // OpenDesign 是唯一「钉住」的目录平台：DSH 里配了 opendesign 供应商却
         // 没登录 vela 时，用户需要看到一句「要先登录 Open Design」，而不是
         // 卡片凭空消失（额度 key 只能由 vela 登录签发）。
@@ -627,6 +695,12 @@ export class QuotaController implements QuotaControllerFace {
       // DSH 模型供应商：id → apiKeyEnv（供 pill 精确对应平台卡片）。
       const providerKeyRefs: Record<string, string> = {}
       for (const lp of llmProviders) if (lp.keyRef) providerKeyRefs[lp.id] = lp.keyRef
+      // 账号路由没有 apiKeyEnv，但它确实对应一张卡（账号钱包）。给它一个
+      // 合成 ref，面板/摘要才能精确认领这张卡，而不是落到平台第一行——
+      // 那一行可能正好是别人 key 的卡。
+      if (showDeepseekAccount && llmProviders.some((lp) => lp.id === 'deepseek-account')) {
+        providerKeyRefs['deepseek-account'] = DEEPSEEK_ACCOUNT_REF
+      }
 
       // DSH 当前默认模型 → 先按 apiKeyEnv 精确对应卡片（同平台多号也准），
       // 再退回到名称模糊匹配 → 一句话额度摘要（pill 展示）。
@@ -871,6 +945,17 @@ export class QuotaController implements QuotaControllerFace {
     // 多账号卡片 id 形如 `deepseek#DEEPSEEK_B_API_KEY`：按该行自己的引用探活，
     // 不能落回适配器的默认引用（那会测到另一张卡）。
     const [platformId, explicitRef] = platform.split('#')
+    // 账号钱包卡没有 API key：用登录态探活，别让用户以为「没配 key」。
+    if (platformId === 'deepseek' && explicitRef === DEEPSEEK_ACCOUNT_REF) {
+      const token = await readDeepSeekAccountToken(this.getCredentials())
+      if (token === undefined) return { ok: false, ms: 0, message: '未登录 DeepSeek 账号，请先在 DSH 账号页登录' }
+      try {
+        await fetchDeepSeekAccountItems(token, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+        return { ok: true, ms: Date.now() - started }
+      } catch (error) {
+        return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
     const direct = this.allDirectAdapters().find((a) => a.id === platformId)
     if (direct) {
       const refs = explicitRef ? [explicitRef] : [...direct.keyRefs, ...direct.envKeys]
