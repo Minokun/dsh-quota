@@ -16,6 +16,7 @@
 
 import type { PanelProvider, QuotaPanelState } from './controller.ts'
 import type { TFn } from './locale.ts'
+import { THRESHOLD_RECOVER_MARGIN, sameWindow } from './usage-alerts.ts'
 
 /** The slice of the panel snapshot alert accounting reads. */
 export type AlertSnapshot = Pick<QuotaPanelState, 'providers' | 'loginAlerts' | 'alertPercent'> & {
@@ -94,11 +95,64 @@ export function alertIdentities(snapshot: AlertSnapshot): AlertIdentity[] {
   return snapshot.providers.flatMap((p) => providerIdentities(p, snapshot))
 }
 
+const USAGE_SIG_PREFIX = 'usage:'
+
+/**
+ * 两个告警条件签名是否指向同一次告警事件：
+ * - usage 签名（`usage:<resetAt>`）复用 {@link sameWindow} 的 5 分钟容差，
+ *   避免上游 `resetsAt` 的秒级抖动让刚点过「已读」的红点在下一轮轮询复活；
+ * - failed / login 按字符串全等（如 401 变 500 属于新问题，必须恢复未读）。
+ */
+export function sameAlertSignature(a: string | undefined, b: string): boolean {
+  if (a === undefined) return false
+  if (a === b) return true
+  if (a.startsWith(USAGE_SIG_PREFIX) && b.startsWith(USAGE_SIG_PREFIX)) {
+    return sameWindow(a.slice(USAGE_SIG_PREFIX.length), b.slice(USAGE_SIG_PREFIX.length))
+  }
+  return false
+}
+
+/**
+ * 虽未越过 `alertPercent`、但尚未真正恢复的 usage 已读 key 集合。
+ *
+ * 与 `usage-alerts.ts` 的 `THRESHOLD_RECOVER_MARGIN`（10 个百分点）同口径：
+ * 读数在阈值线上下（如 82%~87%）横跳、或上游偶发一轮空窗口/报错时，保留
+ * 已读记录，避免下一轮回到阈值以上红点又重新亮起；只有实测百分比跌破
+ * `alertPercent - THRESHOLD_RECOVER_MARGIN`（真·充值/重置）或平台移除才释放。
+ */
+export function retainedUsageAckKeys(snapshot: AlertSnapshot): Set<string> {
+  const floor = snapshot.alertPercent - THRESHOLD_RECOVER_MARGIN
+  const ackedKeys = Object.keys(snapshot.ackedAlerts ?? {})
+  const keep = new Set<string>()
+  for (const p of snapshot.providers) {
+    const prefix = `usage:${p.id}|`
+    if (p.status !== 'ok') {
+      for (const key of ackedKeys) {
+        if (key.startsWith(prefix)) keep.add(key)
+      }
+      continue
+    }
+    const seenLabels = new Set<string>()
+    for (const item of p.items) {
+      seenLabels.add(item.label)
+      if (item.percent === undefined || item.percent >= floor) {
+        keep.add(`${prefix}${item.label}`)
+      }
+    }
+    for (const key of ackedKeys) {
+      if (key.startsWith(prefix) && !seenLabels.has(key.slice(prefix.length))) {
+        keep.add(key)
+      }
+    }
+  }
+  return keep
+}
+
 /** Whether one alert is still unread (never acked, or the condition changed). */
 export function isUnread(snapshot: AlertSnapshot, identity: AlertIdentity): boolean {
   const acked = snapshot.ackedAlerts
   if (acked === undefined) return true
-  return acked[identity.key] !== identity.signature
+  return !sameAlertSignature(acked[identity.key], identity.signature)
 }
 
 /** Render one alert as its display line. */

@@ -103,6 +103,17 @@ test('orderKey: multi-account, multi-line and probe rows collapse onto their pla
   assert.equal(orderKey('deepseek#DEEPSEEK_B_API_KEY'), 'deepseek')
   assert.equal(orderKey('magpie-codex#9625DEB7'), 'magpie-codex')
   assert.equal(orderKey('probe#aihub'), 'aihub')
+  // 本机 Magpie 网关按 provider 独立分组（`magpie#codex` 与 `magpie#claude` 可各自排），
+  // 同 provider 多账号（`/user`）仍归并到一起。
+  assert.equal(orderKey('magpie#codex'), 'magpie#codex')
+  assert.equal(orderKey('magpie#claude'), 'magpie#claude')
+  assert.equal(orderKey('magpie#codex/alice'), 'magpie#codex')
+})
+
+test('orderProviders: built-in magpie provider cards reorder independently instead of moving as one lump', () => {
+  const rows = [row('magpie#codex'), row('magpie#claude'), row('magpie#agy-cli'), row('kimi')]
+  const ordered = orderProviders(rows, 'not-a-platform', {}, undefined, ['magpie#claude', 'kimi', 'magpie#codex', 'magpie#agy-cli'])
+  assert.deepEqual(ordered.map((p) => p.id), ['magpie#claude', 'kimi', 'magpie#codex', 'magpie#agy-cli'])
 })
 
 test('orderProviders: manual order wins, unknown platforms keep host order at the end', () => {

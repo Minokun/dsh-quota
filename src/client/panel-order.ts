@@ -21,9 +21,18 @@ import { MAGPIE_PLATFORM_ID, platformForProvider } from './platform-map.ts'
  * 排序用的「平台组 key」：同一平台的多账号卡（`deepseek#DEEPSEEK_B_API_KEY`）
  * 与探活兜底卡（`probe#aihub`）都归到组上，这样多账号加进来、magpie 多线路
  * 变成 `magpie-codex#9625DEB7` 之后，用户排好的位置依然有效。
+ *
+ * 例外是本机 Magpie 网关（`magpie#<provider>`，多账号时 `magpie#<provider>/<user>`）：
+ * 这里的 `#` 后面首先是不同平台（Codex / Claude / Gemini），按 `#` 一刀切会把
+ * 所有网关卡片绑死成同一个 `magpie` 组，无法各自调序；因此保留 `magpie#<provider>`，
+ * 只剥掉末尾的 `/<user>` 账号后缀。
  */
 export function orderKey(id: string): string {
   const bare = id.startsWith('probe#') ? id.slice('probe#'.length) : id
+  if (bare.startsWith(`${MAGPIE_PLATFORM_ID}#`)) {
+    const slash = bare.indexOf('/', MAGPIE_PLATFORM_ID.length + 1)
+    return slash === -1 ? bare : bare.slice(0, slash)
+  }
   const hash = bare.indexOf('#')
   return hash === -1 ? bare : bare.slice(0, hash)
 }

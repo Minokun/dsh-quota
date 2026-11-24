@@ -402,23 +402,9 @@ export function QuotaPanel(props: QuotaPanelProps) {
     return () => { document.removeEventListener('pointerdown', onDown, true) }
   }, [state.open])
 
-  // 红点告警 Badge（两种形态共用）。点红点 = 标为已读（红点消失，
-  // 条件不变就不再回来；窗口重置 / 新错误会让它重新亮起）。
-  const badge = alerts > 0 && (
-    <span
-      className="dq-alert"
-      role="button"
-      tabIndex={0}
-      title={t('alert.ack')}
-      onClick={(e) => { e.stopPropagation(); props.ackAlerts() }}
-      onKeyDown={(e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return
-        e.preventDefault()
-        e.stopPropagation()
-        props.ackAlerts()
-      }}
-    >{alerts > 99 ? '99+' : alerts}</span>
-  )
+  // 红点告警 Badge（两种形态共用）：只做计数提示、不拦截点击，确保用户点悬浮球
+  // 任何位置都能先展开面板看清告警内容；标为已读放在面板头部「⚠ N 项告警」按钮上。
+  const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
 
   const dragHandlers = {
     onPointerDown: onPillPointerDown,

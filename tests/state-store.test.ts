@@ -13,6 +13,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     mcpPlatforms: [],
     httpPlatforms: [],
     loginFlows: [{ id: 'scnet', url: 'https://www.scnet.cn/' }],
+    providerOrder: [],
     providerKeyRefs: {},
     history: {},
     alertPercent: 85,

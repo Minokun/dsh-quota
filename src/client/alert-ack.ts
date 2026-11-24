@@ -9,7 +9,7 @@
  * @module dsh-quota/client/alert-ack
  */
 
-import type { AlertIdentity } from './alerts.ts'
+import { sameAlertSignature, type AlertIdentity } from './alerts.ts'
 
 /** 已读告警：alert key → 已读时的条件签名。 */
 export type AlertAckState = Record<string, string>
@@ -20,28 +20,48 @@ export function createAlertAckState(): AlertAckState {
 }
 
 /**
- * 把当前所有告警标为已读：返回只含现存告警的新状态。
+ * 把当前所有告警标为已读：返回只含现存（及滞回保留期内的）告警的新状态。
+ * 同一窗口已读过的条目保留最初锚定的签名，避免秒级抖动逐轮累积漂移。
  * @param identities - 当前全部告警（含已读的，见 alertIdentities）。
+ * @param previous - 上一份已读状态（可选）。
+ * @param retained - 处于滞回保留期内的 key 集合（见 retainedUsageAckKeys）。
  * @returns 新的已读状态。
  */
-export function ackAll(identities: AlertIdentity[]): AlertAckState {
+export function ackAll(
+  identities: AlertIdentity[],
+  previous: AlertAckState = {},
+  retained?: ReadonlySet<string>,
+): AlertAckState {
   const next: AlertAckState = {}
-  for (const identity of identities) next[identity.key] = identity.signature
+  if (retained) {
+    for (const [key, sig] of Object.entries(previous)) {
+      if (retained.has(key)) next[key] = sig
+    }
+  }
+  for (const identity of identities) {
+    const prev = previous[identity.key]
+    next[identity.key] = sameAlertSignature(prev, identity.signature) ? prev! : identity.signature
+  }
   return next
 }
 
 /**
- * 清掉本轮已不存在的已读记录（告警消失 → 下次出现要重新提醒）。
+ * 清掉本轮已不存在（且不在滞回保留期内）的已读记录（告警真正消失 → 下次出现要重新提醒）。
  * @param state - 上一份已读状态。
  * @param identities - 当前全部告警。
+ * @param retained - 处于滞回保留期内的 key 集合（见 retainedUsageAckKeys）。
  * @returns 清理后的状态；没有变化时返回 undefined（调用方据此省掉一次写盘 / 渲染）。
  */
-export function pruneAcks(state: AlertAckState, identities: AlertIdentity[]): AlertAckState | undefined {
+export function pruneAcks(
+  state: AlertAckState,
+  identities: AlertIdentity[],
+  retained?: ReadonlySet<string>,
+): AlertAckState | undefined {
   const live = new Set(identities.map((a) => a.key))
   const next: AlertAckState = {}
   let changed = false
   for (const [key, signature] of Object.entries(state)) {
-    if (live.has(key)) next[key] = signature
+    if (live.has(key) || retained?.has(key)) next[key] = signature
     else changed = true
   }
   return changed ? next : undefined

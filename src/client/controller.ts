@@ -7,7 +7,7 @@
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { ackAll, deserializeAlertAckState, pruneAcks, serializeAlertAckState, type AlertAckState } from './alert-ack.ts'
-import { alertIdentities } from './alerts.ts'
+import { alertIdentities, retainedUsageAckKeys } from './alerts.ts'
 import { browserLang, translate, type Lang } from './locale.ts'
 import { trendValues } from './sparkline.ts'
 import { createUsageAlertState, deserializeUsageAlertState, evaluateUsageAlerts, serializeUsageAlertState, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
@@ -460,18 +460,18 @@ export class QuotaPanelController {
   /** 把当前红点告警全部标为已读；条件不变就不再计入红点。 */
   private ackAlerts(): void {
     const snap = this.store.getSnapshot()
-    const next = ackAll(alertIdentities(snap))
+    const next = ackAll(alertIdentities(snap), snap.ackedAlerts, retainedUsageAckKeys(snap))
     saveAlertAcks(next)
     this.patch({ ackedAlerts: next })
   }
 
   /**
-   * 清掉已经消失的告警的已读记录：告警消失（平台恢复 / 条目回落 / 窗口
+   * 清掉已经消失的告警的已读记录：告警真正恢复（平台恢复 / 额度明显回落 / 窗口
    * 重置）后再出现时重新变回未读。没有变化则不写盘、不重渲染。
    */
   private pruneAlertAcks(): void {
     const snap = this.store.getSnapshot()
-    const next = pruneAcks(snap.ackedAlerts, alertIdentities(snap))
+    const next = pruneAcks(snap.ackedAlerts, alertIdentities(snap), retainedUsageAckKeys(snap))
     if (next === undefined) return
     saveAlertAcks(next)
     this.patch({ ackedAlerts: next })

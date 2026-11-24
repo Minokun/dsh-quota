@@ -29,8 +29,8 @@ export const PANEL_CSS = `
 .dq-pill { position: relative; }
 
 /* 红点告警 Badge：失败平台 + 越阈值条目 + 登录失效提醒的合计数量。
-   可点击（标为已读），所以不再 pointer-events: none。 */
-/* 头部告警角标：与「N/N 平台正常」并列，可点击标为已读。 */
+   悬浮球上的红点不拦截点击（点球先展开面板看清内容），已读入口在面板头部。 */
+/* 头部告警角标：与标题并列，可点击标为已读。 */
 .dq-panel-alert {
   font-size: 11px; font-weight: 600; color: #e74c3c; cursor: pointer;
   border: none; background: none; padding: 0; font-family: inherit;
@@ -42,7 +42,7 @@ export const PANEL_CSS = `
   display: inline-flex; align-items: center; justify-content: center;
   background: #e74c3c; color: #fff; font-size: 10px; font-weight: 700; line-height: 1;
   box-shadow: 0 0 0 2px var(--dsw-alias-bg-layer-2, rgba(20, 20, 28, 0.92));
-  animation: dq-alert-pulse 2s ease-in-out infinite; pointer-events: auto; cursor: pointer;
+  animation: dq-alert-pulse 2s ease-in-out infinite; pointer-events: none;
 }
 @keyframes dq-alert-pulse {
   0%, 100% { transform: scale(1); }
