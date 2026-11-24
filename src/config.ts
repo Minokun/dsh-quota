@@ -139,6 +139,12 @@ export interface Config {
   httpPlatforms: CustomHttpPlatform[]
   /** Login flows by platform id (composition-level; overrides built-in URLs). */
   loginFlows: LoginFlow[]
+  /**
+   * 面板卡片的手动顺序（平台组 key，如 `deepseek` / `magpie-commandcode`；
+   * 见 client/panel-order.ts）。空数组 = 只按「当前在用平台置顶 + Host 顺序」。
+   * 新出现的平台（新线路、新账号）追加在末尾，不会打乱已有手动顺序。
+   */
+  providerOrder: string[]
   /** DSH 模型供应商 id → 其 apiKeyEnv 凭证引用（当前模型与平台卡片按引用精确对应）。 */
   providerKeyRefs: Record<string, string>
   /** 时序采样历史：`${providerId}::${itemLabel}` → [epochMs, value][]（告警/速率/ETA 用，不含任何凭据）。 */
@@ -190,6 +196,8 @@ export const Config: z<Config> = z.object({
     debugChrome: z.boolean(),
     afterLogin: z.string(),
   })).default([]),
+  // 手动排序同样是面板运行时编辑：标记 live，settings.update 才接受这条路径。
+  providerOrder: live(z.array(z.string()).default([])),
   providerKeyRefs: z.dict(z.string()).default({}),
   history: z.dict(z.array(z.array(z.number()))).default({}),
   alertPercent: z.number().default(85),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { orderProviders, providerRowOf } from '../src/client/panel-order.ts'
+import { orderKey, orderProviders, providerRowOf } from '../src/client/panel-order.ts'
 import type { PanelProvider } from '../src/client/controller.ts'
 
 /** Minimal provider row (the ordering helpers only touch id/keyRef/status). */
@@ -96,4 +96,41 @@ test('orderProviders: a magpie model whose provider has no row falls back to the
   const rows = [row('magpie#codex', 'MAGPIE_GATEWAY_KEY'), row('kimi')]
   // 模型路由到网关里没接的供应商时，不要因此丢掉置顶（退回 ref 命中）。
   assert.equal(providerRowOf(rows, 'magpie-responses', { 'magpie-responses': 'MAGPIE_GATEWAY_KEY' }, 'zai/glm-5.3')?.id, 'magpie#codex')
+})
+
+test('orderKey: multi-account, multi-line and probe rows collapse onto their platform group', () => {
+  assert.equal(orderKey('kimi'), 'kimi')
+  assert.equal(orderKey('deepseek#DEEPSEEK_B_API_KEY'), 'deepseek')
+  assert.equal(orderKey('magpie-codex#9625DEB7'), 'magpie-codex')
+  assert.equal(orderKey('probe#aihub'), 'aihub')
+})
+
+test('orderProviders: manual order wins, unknown platforms keep host order at the end', () => {
+  const ordered = orderProviders(ROWS, 'not-a-platform', {}, undefined, ['qianwen', 'deepseek'])
+  assert.deepEqual(ordered.map((p) => p.id), ['qianwen', 'deepseek', 'kimi', 'zhipu'])
+  assert.equal(ordered.length, ROWS.length)
+})
+
+test('orderProviders: a manual position for the active platform beats the pin (no跳位 when the model changes)', () => {
+  // 用户把 zhipu 排在最后；当前模型恰好走 zhipu——仍按用户顺序，不置顶。
+  const ordered = orderProviders(ROWS, 'zhipu', {}, undefined, ['kimi', 'deepseek', 'qianwen', 'zhipu'])
+  assert.deepEqual(ordered.map((p) => p.id), ['kimi', 'deepseek', 'qianwen', 'zhipu'])
+})
+
+test('orderProviders: the active platform still pins when the manual order does not mention it', () => {
+  // 新线路/新账号（或刚换到手动顺序里没有的平台）继续享受置顶。
+  const ordered = orderProviders(ROWS, 'zhipu', {}, undefined, ['qianwen', 'deepseek'])
+  assert.deepEqual(ordered.map((p) => p.id), ['zhipu', 'qianwen', 'deepseek', 'kimi'])
+})
+
+test('orderProviders: a group stays together when its rows carry #-suffixes', () => {
+  const rows = [row('kimi'), row('deepseek#A'), row('deepseek#B'), row('zhipu')]
+  const ordered = orderProviders(rows, 'not-a-platform', {}, undefined, ['deepseek', 'kimi', 'zhipu'])
+  assert.deepEqual(ordered.map((p) => p.id), ['deepseek#A', 'deepseek#B', 'kimi', 'zhipu'])
+})
+
+test('orderProviders: stale ids in the manual order are ignored, not dropped or reordered', () => {
+  // 平台行被隐藏（未配 key）后手动顺序仍留着它——行回来了位置不变。
+  const ordered = orderProviders(ROWS, 'not-a-platform', {}, undefined, ['removed-platform', 'kimi'])
+  assert.deepEqual(ordered.map((p) => p.id), ['kimi', 'deepseek', 'zhipu', 'qianwen'])
 })

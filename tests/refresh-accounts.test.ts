@@ -52,6 +52,7 @@ function baseConfig(): Config {
     mcpPlatforms: [],
     httpPlatforms: [],
     loginFlows: [],
+    providerOrder: [],
     providerKeyRefs: {},
     history: {},
     alertPercent: 85,

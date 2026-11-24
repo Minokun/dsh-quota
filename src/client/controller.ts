@@ -6,6 +6,8 @@
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { ackAll, deserializeAlertAckState, pruneAcks, serializeAlertAckState, type AlertAckState } from './alert-ack.ts'
+import { alertIdentities } from './alerts.ts'
 import { browserLang, translate, type Lang } from './locale.ts'
 import { trendValues } from './sparkline.ts'
 import { createUsageAlertState, deserializeUsageAlertState, evaluateUsageAlerts, serializeUsageAlertState, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
@@ -159,12 +161,16 @@ export interface QuotaPanelState {
   keyPlatforms: Array<{ id: string; label: string }>
   /** DSH 模型供应商 id → apiKeyEnv（host 下发，pill 精确对应卡片）。 */
   providerKeyRefs: Record<string, string>
+  /** 用户手动排的面板卡片顺序（平台组 key，见 panel-order.ts；空 = 未手动排序）。 */
+  providerOrder: string[]
   /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量告警（悬浮球 toast：越阈值跨越 + 预计耗尽，见 usage-alerts.ts）。 */
   usageAlerts: UsageAlert[]
   /** 用量占比告警阈值（host 下发，默认 85）。 */
   alertPercent: number
+  /** 已读告警（alert key → 已读时的条件签名，见 alert-ack.ts）：命中的不再计入红点。 */
+  ackedAlerts: AlertAckState
   /** 正在测活的平台 id。 */
   probing: string
   /** 平台 id → 最近一次测活结果（延迟/错误）。 */
@@ -202,6 +208,10 @@ export interface QuotaPanelFace {
   dismissUsageAlert(key: string): void
   /** Run a one-shot connectivity probe for one platform card. */
   probe(platform: string): void
+  /** Persist the manual card order (平台组 key 序列，见 panel-order.ts). */
+  setProviderOrder(order: string[]): void
+  /** 把当前红点告警全部标为已读（条件不变就不再计数，窗口重置后自动恢复）。 */
+  ackAlerts(): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -227,10 +237,12 @@ const INITIAL: QuotaPanelState = {
   loginPending: '',
   keyPlatforms: [],
   providerKeyRefs: {},
+  providerOrder: [],
   loginAlerts: [],
   usageAlerts: [],
   trends: {},
   alertPercent: 85,
+  ackedAlerts: loadAlertAcks(),
   probing: '',
   probeResults: {},
   lang: browserLang(),
@@ -359,13 +371,15 @@ export class QuotaPanelController {
       dismissLogin: (platform) => { this.dismissLogin(platform) },
       dismissUsageAlert: (key) => { this.dismissUsageAlert(key) },
       probe: (platform) => { void this.probe(platform) },
+      setProviderOrder: (order) => { void this.setProviderOrder(order) },
+      ackAlerts: () => { this.ackAlerts() },
     }
   }
 
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; history?: Record<string, unknown> }>('/status', undefined, this.lang())
       // /status 本就携带 history（host 时序采样），这里裁成每条目最近 30 个
       // 采样值存入 trends，供面板条目的 sparkline 使用。
       const trends: Record<string, number[]> = {}
@@ -384,12 +398,14 @@ export class QuotaPanelController {
         loginFlows: state.loginFlows ?? {},
         keyPlatforms: state.keyPlatforms ?? [],
         providerKeyRefs: state.providerKeyRefs ?? {},
+        providerOrder: state.providerOrder ?? [],
         alertPercent: state.alertPercent ?? 85,
         trends,
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
       this.updateUsageAlerts(state.providers, state.alertPercent ?? 85)
+      this.pruneAlertAcks()
     } catch {
       this.patch({ loaded: true, formError: translate(this.lang(), 'error.readStatus') })
     }
@@ -441,6 +457,26 @@ export class QuotaPanelController {
     this.patch({ usageAlerts: snap.usageAlerts.filter((a) => a.key !== key) })
   }
 
+  /** 把当前红点告警全部标为已读；条件不变就不再计入红点。 */
+  private ackAlerts(): void {
+    const snap = this.store.getSnapshot()
+    const next = ackAll(alertIdentities(snap))
+    saveAlertAcks(next)
+    this.patch({ ackedAlerts: next })
+  }
+
+  /**
+   * 清掉已经消失的告警的已读记录：告警消失（平台恢复 / 条目回落 / 窗口
+   * 重置）后再出现时重新变回未读。没有变化则不写盘、不重渲染。
+   */
+  private pruneAlertAcks(): void {
+    const snap = this.store.getSnapshot()
+    const next = pruneAcks(snap.ackedAlerts, alertIdentities(snap))
+    if (next === undefined) return
+    saveAlertAcks(next)
+    this.patch({ ackedAlerts: next })
+  }
+
   /** One-shot connectivity probe: latency on success, upstream error on failure. */
   private async probe(platform: string): Promise<void> {
     this.patch({ probing: platform })
@@ -456,6 +492,26 @@ export class QuotaPanelController {
       })
     } finally {
       this.patch({ probing: '' })
+    }
+  }
+
+  /**
+   * 手动排序：先乐观更新本地快照（面板立刻重排），再 POST /order 落盘；
+   * 失败回退到上一份顺序并把错误挂在 formError 上。
+   */
+  private async setProviderOrder(order: string[]): Promise<void> {
+    const previous = this.store.getSnapshot().providerOrder
+    this.patch({ providerOrder: order, formError: '' })
+    try {
+      const result = await request<{ ok?: boolean; providerOrder?: string[] }>('/order', { order }, this.lang())
+      if (result.providerOrder) this.patch({ providerOrder: result.providerOrder })
+    } catch (error) {
+      this.patch({
+        providerOrder: previous,
+        formError: error instanceof Error && error.message
+          ? error.message
+          : translate(this.lang(), 'error.saveOrder'),
+      })
     }
   }
 
@@ -547,6 +603,7 @@ export class QuotaPanelController {
         providers: state.providers,
       })
       this.updateUsageAlerts(state.providers, this.store.getSnapshot().alertPercent)
+      this.pruneAlertAcks()
     })
   }
 
@@ -627,6 +684,8 @@ async function request<T>(path: string, body: Record<string, unknown> | undefine
 
 /** localStorage key for the once-per-window usage-alert state. */
 const USAGE_ALERT_STORE_KEY = 'dsh-quota:usage-alerts'
+/** localStorage key for the acked (read) alerts — the red badge stays quiet. */
+const ALERT_ACK_STORE_KEY = 'dsh-quota:alert-acks'
 /** 用量提醒 toast 的自动收起时长：条件仍满足也收起（不会重弹，窗口内只提醒一次）。 */
 const ALERT_VISIBLE_MS = 10 * 60 * 1000
 
@@ -645,5 +704,22 @@ function loadUsageAlertState(): UsageAlertState {
 function saveUsageAlertState(state: UsageAlertState): void {
   try {
     window.localStorage.setItem(USAGE_ALERT_STORE_KEY, serializeUsageAlertState(state))
+  } catch { /* 隐私模式等 localStorage 不可用 */ }
+}
+
+/** 读持久化的已读告警；不可用 / 损坏时回退空白状态（最坏情况多显示一次红点）。 */
+function loadAlertAcks(): AlertAckState {
+  try {
+    const raw = window.localStorage.getItem(ALERT_ACK_STORE_KEY)
+    return raw === null ? {} : (deserializeAlertAckState(raw) ?? {})
+  } catch {
+    return {} // 隐私模式等 localStorage 不可用
+  }
+}
+
+/** 把已读告警写回 localStorage（失败静默：本次运行内仍然生效）。 */
+function saveAlertAcks(state: AlertAckState): void {
+  try {
+    window.localStorage.setItem(ALERT_ACK_STORE_KEY, serializeAlertAckState(state))
   } catch { /* 隐私模式等 localStorage 不可用 */ }
 }
