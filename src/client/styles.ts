@@ -122,17 +122,46 @@ export const PANEL_CSS = `
 .dq-btn--ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1)); }
 
 .dq-panel-body { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
-.dq-provider { border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.22)); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
-/* 有告警的平台：左侧红条 + 淡红底，在一列卡片里一眼可辨。 */
+.dq-provider {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.22)); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  transition: border-color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+}
+/* 当前在用模型所属卡片：原位柔和品牌描边高亮，不跳位。 */
+.dq-provider--active {
+  border-color: rgba(91, 108, 255, 0.5);
+  background: rgba(91, 108, 255, 0.04);
+}
+/* 有告警的平台：左侧红条 + 淡红底，优先级高于在用描边。 */
 .dq-provider--alert {
   border-left: 3px solid #e74c3c; padding-left: 10px;
   background: rgba(231, 76, 60, 0.05);
+}
+/* 正在被拖拽的卡片：半透明 + 浮起投影，其余卡片实时让位。 */
+.dq-provider--dragging {
+  opacity: 0.62;
+  border-color: var(--dsw-alias-brand-primary, #5b6cff);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
 }
 .dq-alert-chip {
   flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px;
   background: rgba(231, 76, 60, 0.16); color: #e74c3c; cursor: help;
 }
-.dq-provider-head { display: flex; align-items: center; gap: 8px; }
+.dq-active-chip {
+  flex: none; padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 16px;
+  background: rgba(91, 108, 255, 0.18); color: var(--dsw-alias-brand-primary, #5b6cff);
+}
+.dq-provider-head { display: flex; align-items: center; gap: 6px; }
+/* 左侧常驻轻量拖拽手柄：仅手柄捕获指针拖拽，不干扰卡片文字选择与右侧按钮。 */
+.dq-drag-handle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; margin-left: -3px; font-size: 12px; line-height: 1; letter-spacing: -2px;
+  color: var(--dsw-alias-label-tertiary, #777); opacity: 0.55;
+  cursor: grab; user-select: none; touch-action: none;
+}
+.dq-drag-handle:hover { opacity: 1; color: var(--dsw-alias-label-primary, #eee); }
+.dq-provider--dragging .dq-drag-handle { cursor: grabbing; opacity: 1; color: var(--dsw-alias-brand-primary, #5b6cff); }
+.dq-drag-handle--disabled { opacity: 0.2; cursor: default; pointer-events: none; }
 /* 本会话卡片：整行头部就是折叠开关（默认收起），收起时右侧显示花费预览。 */
 .dq-session-toggle {
   width: 100%; padding: 0; background: transparent; border: none; cursor: pointer;
@@ -158,7 +187,7 @@ export const PANEL_CSS = `
 /* 计费周期句子比 key 引用长：允许折行，不要被 nowrap 裁掉后半句
    （双类选择器压过 .dq-provider-key 的 nowrap，与书写顺序无关）。 */
 .dq-provider-key.dq-session-billing { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
-.dq-provider-name { font-weight: 600; font-size: 13px; flex: 1; }
+.dq-provider-name { font-weight: 600; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dq-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .dq-badge--ok { background: rgba(61, 220, 132, 0.16); color: #3ddc84; }
 .dq-badge--error { background: rgba(231, 76, 60, 0.14); color: #e74c3c; }
@@ -167,9 +196,6 @@ export const PANEL_CSS = `
 .dq-badge--api { background: rgba(91, 108, 255, 0.14); color: #5b6cff; }
 .dq-badge--mcp { background: rgba(0, 180, 216, 0.14); color: #00b4d8; }
 .dq-probe { padding: 2px 8px; font-size: 11px; flex: none; }
-/* 排序模式：▲▼ 两个小按钮挤在卡片标题行里，不抢名字的空间。 */
-.dq-order-btns { display: inline-flex; gap: 2px; flex: none; }
-.dq-order { padding: 0 5px; font-size: 10px; line-height: 1.5; flex: none; }
 .dq-probe-result { font-size: 10px; font-variant-numeric: tabular-nums; word-break: break-all; }
 .dq-probe-result--ok { color: #3ddc84; }
 .dq-probe-result--err { color: #e74c3c; }
@@ -189,7 +215,15 @@ export const PANEL_CSS = `
 .dq-item-fill--ok { background: linear-gradient(90deg, #3ddc84, #00b4d8); }
 .dq-item-fill--warn { background: linear-gradient(90deg, #f5a623, #f7ce46); }
 .dq-item-fill--danger { background: linear-gradient(90deg, #e74c3c, #ff7b54); }
-.dq-item-value { flex: none; text-align: right; color: var(--dsw-alias-label-secondary, #999); font-variant-numeric: tabular-nums; font-size: 11px; }
+/* 关键数字：条目值是整张卡里唯一需要「一眼读出量级」的东西，所以它不是
+   注释色 11px，而是主文字色 + 加粗 + 13px + 等宽数字。标签仍走次级色，
+   序号靠数值本身——一列卡片扫下来，眼睛自然落在数字列上。 */
+.dq-item-value {
+  flex: none; text-align: right;
+  color: var(--dsw-alias-label-primary, #eee);
+  font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1;
+  font-size: 13px; font-weight: 650; letter-spacing: -0.2px;
+}
 /* 趋势 sparkline：默认次级色，越阈值条目随告警变红。 */
 .dq-item-spark { flex: none; color: var(--dsw-alias-label-tertiary, #777); }
 .dq-item--alert .dq-item-spark { color: #e74c3c; }
@@ -218,10 +252,19 @@ export const PANEL_CSS = `
   background: var(--dsw-alias-bg-layer-1, transparent); color: var(--dsw-alias-label-primary, inherit); outline: none;
 }
 .dq-input:focus { border-color: var(--dsw-alias-brand-primary, #5b6cff); }
-.dq-foot { font-size: 11px; color: var(--dsw-alias-label-tertiary, #777); text-align: center; padding: 2px 0 4px; }
+.dq-foot {
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; color: var(--dsw-alias-label-tertiary, #777); padding: 2px 14px 10px;
+}
+.dq-foot--split { justify-content: space-between; }
 /* 头部放不下的「N/M 平台正常」挪到 footer，用中点分隔。 */
 .dq-foot-count { white-space: nowrap; }
 .dq-foot-count::before { content: ' · '; opacity: 0.7; }
+.dq-foot-reset {
+  border: none; background: none; padding: 0; font: inherit; font-size: 11px;
+  color: var(--dsw-alias-brand-primary, #5b6cff); cursor: pointer; white-space: nowrap;
+}
+.dq-foot-reset:hover { text-decoration: underline; }
 
 /* Custom-platform section extras (select + ref label). */
 .dq-custom-ref { flex: 1; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-tertiary, #777); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

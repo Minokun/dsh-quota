@@ -194,6 +194,48 @@ function shortTag(label: string): string {
   return ''
 }
 
+/**
+ * 按 DSH 模型选择框的供应商展示顺序（`orderModelProviders` 口径）对额度行做基线排序：
+ * `deepseek-account` 第一 → `deepseek-official` 第二 → 其余按 `llmProviders` 顺序；
+ * 不在模型列表里的纯额度卡（独立私有 key / 本地订阅兜底 / 纯 MCP）保持原相对次序排在末尾。
+ * `llmProviders` 为空时原样返回。
+ */
+export function sortByDshModelOrder(
+  providers: readonly ProviderSnapshot[],
+  llmProviders: readonly LlmProviderInfo[],
+  providerKeyRefs: Record<string, string>,
+): ProviderSnapshot[] {
+  if (llmProviders.length === 0 || providers.length < 2) return [...providers]
+  const tier = (id: string): number => (id === 'deepseek-account' ? 0 : id === 'deepseek-official' ? 1 : 2)
+  const orderedLlm = [...llmProviders].sort((a, b) => tier(a.id) - tier(b.id))
+  const refRank = new Map<string, number>()
+  const idRank = new Map<string, number>()
+  const platformRank = new Map<string, number>()
+  orderedLlm.forEach((lp, idx) => {
+    const ref = providerKeyRefs[lp.id] ?? lp.keyRef
+    if (ref && !refRank.has(ref)) refRank.set(ref, idx)
+    const probeId = `probe#${lp.id}`
+    if (!idRank.has(probeId)) idRank.set(probeId, idx)
+    const platform = platformForProvider(lp.id)
+    if (platform && !platformRank.has(platform)) platformRank.set(platform, idx)
+  })
+  const fallback = orderedLlm.length
+  const rankOf = (p: ProviderSnapshot): number => {
+    if (p.keyRef !== undefined) {
+      const byRef = refRank.get(p.keyRef)
+      if (byRef !== undefined) return byRef
+    }
+    const byId = idRank.get(p.id)
+    if (byId !== undefined) return byId
+    const base = p.id.startsWith('probe#') ? p.id : (p.id.split('#')[0] ?? p.id)
+    return platformRank.get(base) ?? fallback
+  }
+  return providers
+    .map((provider, index) => ({ provider, index, rank: rankOf(provider) }))
+    .sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank))
+    .map((entry) => entry.provider)
+}
+
 /** One-line quota summary for the pill: up to two headline windows joined by " · ". */
 function summarize(snapshot: ProviderSnapshot): string {
   if (snapshot.status !== 'ok') return ''
@@ -759,6 +801,11 @@ export class QuotaController implements QuotaControllerFace {
           providers.push({ id: rowId, label: lp.label, status: 'error', via: 'api', keyRef: key.ref, keySource: key.source, message: `探测失败：${error instanceof Error ? error.message : String(error)}`, items: [] })
         }
       }
+
+      // 默认按 DSH 模型选择框的供应商顺序排列基线快照（客户端拿到自定义拖拽顺序
+      // 或网关组内模型列表后再在其上细化），保证欢迎页与工具输出也一致。
+      const orderedSnapshot = sortByDshModelOrder(providers, llmProviders, providerKeyRefs)
+      providers.splice(0, providers.length, ...orderedSnapshot)
 
       // 时序采样 → 消耗速率 + 预估剩余时长：先把本轮数值并入历史（采样
       // 间隔 ≥10 分钟，重置级跳变立即记），再按条目形态分流：

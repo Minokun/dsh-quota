@@ -1,31 +1,26 @@
 /**
- * 面板平台卡片的排序规则，三层依次生效：
+ * 面板平台卡片的排序规则，两层依次生效（不再把当前在用模型自动顶到最前）：
  *
- * 1. 用户手动顺序（`providerOrder`，面板「排序」模式下 ▲▼ 调出来的）——命中的
- *    平台按它排；手动顺序里没有的新平台追加在末尾，不会打乱已有排列；
- * 2. 「当前在用」的平台置顶——但用户已经在手动顺序里给这个平台指定了位置时
- *    不再强插，否则手动排好的第一位会被换模型抢走；
- * 3. 其余保持 Host 下发的固定顺序。
+ * 1. 用户拖拽自定义顺序（`providerOrder`，按卡片精确 `id` 记录；向后兼容旧版
+ *    平台组 key）——命中的卡片按自定义顺序排；未记录的新卡片按默认顺序追加在末尾；
+ *    暂时隐藏的旧卡片保留在 `providerOrder` 里，恢复后自动回到原位。
+ * 2. 默认顺序严格对齐 DSH 模型选择框（`orderModelProviders` 口径）：
+ *    `deepseek-account` 第一 → `deepseek-official` 第二 → 其余按模型目录里
+ *    供应商出现的顺序；本机 Magpie 网关的多张子卡（`magpie#<owner>`）按网关组内
+ *    模型首次出现的 owner 顺序排列；不在模型列表里的纯额度卡排在最后。
  *
- * 排序只在客户端做：模型一换面板立刻重排，不需要刷新 Host 快照；手动顺序
- * 由 Host 存（POST /order），重启后仍在。
+ * 当前在用卡片不再跳位，仅由 {@link providerRowOf} 识别后在原位置展示「在用」标记。
  *
  * 纯函数、无 React / DOM 依赖，可单测。
  * @module dsh-quota/client/panel-order
  */
 
-import type { PanelProvider } from './controller.ts'
+import type { ModelCatalogGroupLike, PanelProvider } from './controller.ts'
 import { MAGPIE_PLATFORM_ID, platformForProvider } from './platform-map.ts'
 
 /**
- * 排序用的「平台组 key」：同一平台的多账号卡（`deepseek#DEEPSEEK_B_API_KEY`）
- * 与探活兜底卡（`probe#aihub`）都归到组上，这样多账号加进来、magpie 多线路
- * 变成 `magpie-codex#9625DEB7` 之后，用户排好的位置依然有效。
- *
- * 例外是本机 Magpie 网关（`magpie#<provider>`，多账号时 `magpie#<provider>/<user>`）：
- * 这里的 `#` 后面首先是不同平台（Codex / Claude / Gemini），按 `#` 一刀切会把
- * 所有网关卡片绑死成同一个 `magpie` 组，无法各自调序；因此保留 `magpie#<provider>`，
- * 只剥掉末尾的 `/<user>` 账号后缀。
+ * 平台组 key：剥掉 `probe#` 前缀与凭证/线路后缀（本机 Magpie 保留 `magpie#<provider>`，
+ * 仅剥 `/<user>`）。用于向后兼容旧版按组落盘的 `providerOrder` 以及默认平台级归属匹配。
  */
 export function orderKey(id: string): string {
   const bare = id.startsWith('probe#') ? id.slice('probe#'.length) : id
@@ -38,8 +33,8 @@ export function orderKey(id: string): string {
 }
 
 /**
- * DSH 模型供应商 id → 面板行：先按 apiKeyEnv 精确对应（同平台多号也准），
- * 再退回平台 id 模糊匹配（`kimi` 命中 `kimi#2` 这类多行 id）。
+ * DSH 模型供应商 id → 面板行：先按 Magpie 模型前缀认领，再按 apiKeyEnv 精确对应
+ * （同平台多号也准），最后退回平台 id 匹配。供悬浮球摘要与原位「在用」高亮共用。
  */
 export function providerRowOf(
   providers: readonly PanelProvider[],
@@ -49,9 +44,6 @@ export function providerRowOf(
 ): PanelProvider | undefined {
   if (!provider) return undefined
   const platformId = platformForProvider(provider)
-  // Magpie 的行共用同一个凭证引用（一个网关 Key 背后是好几个账号），按 ref
-  // 找只会命中本机第一行——那样置顶的永远不是正在用的那个账号。模型 id 自带
-  // provider 前缀（`codex/gpt-5.6-terra`），先按它认领。
   if (platformId === MAGPIE_PLATFORM_ID) {
     const owner = model?.split('/')[0]?.trim().toLowerCase()
     if (owner) {
@@ -59,8 +51,6 @@ export function providerRowOf(
       if (hit) return hit
     }
   }
-  // apiKeyEnv 精确对应优先，且不要求 provider 能映射到内置平台——自定义平台
-  // 的凭证引用同样可能就是这个 provider 的 apiKeyEnv。
   const ref = providerKeyRefs[provider]
   const byRef = ref ? providers.find((p) => p.keyRef === ref) : undefined
   if (byRef) return byRef
@@ -69,29 +59,86 @@ export function providerRowOf(
 }
 
 /**
- * 把当前在用平台的行提到最前，其余保持原顺序。找不到对应行时原样返回
- * （不排序，也不丢行）；同一平台多号时只提前 apiKeyEnv 精确命中的那一行。
- *
- * `customOrder` 是用户手动排的「平台组 key」序列（见 {@link orderKey}）。
+ * 按 DSH 模型选择框顺序排列默认卡片顺序：
+ * `deepseek-account` (0) → `deepseek-official` (1) → 其余目录分组保序；
+ * Magpie 网关组内按 `models` 首次出现的 `<owner>/` 前缀细分各子卡次序；
+ * `catalogGroups` 尚未加载时保持 Host 下发的基线顺序（Host 已按同口径排好）。
  */
-export function orderProviders(
+export function defaultOrderProviders(
   providers: readonly PanelProvider[],
-  activeProvider: string,
-  providerKeyRefs: Record<string, string>,
-  model?: string,
-  customOrder: readonly string[] = [],
+  catalogGroups: readonly ModelCatalogGroupLike[] = [],
+  providerKeyRefs: Record<string, string> = {},
 ): PanelProvider[] {
-  const ranked = byCustomOrder(providers, customOrder)
-  const active = providerRowOf(providers, activeProvider, providerKeyRefs, model)
-  if (!active) return ranked
-  // 用户手动排过当前平台 → 尊重他的位置，不再置顶。
-  if (customOrder.length > 0 && customOrder.includes(orderKey(active.id))) return ranked
-  return [active, ...ranked.filter((p) => p !== active)]
+  if (catalogGroups.length === 0 || providers.length < 2) return [...providers]
+  const tier = (id: string): number => (id === 'deepseek-account' ? 0 : id === 'deepseek-official' ? 1 : 2)
+  const sortedGroups = [...catalogGroups].sort((a, b) => tier(a.id) - tier(b.id))
+
+  const refRank = new Map<string, number>()
+  const idRank = new Map<string, number>()
+  const platformRank = new Map<string, number>()
+  const magpieOwnerRank = new Map<string, number>()
+  let magpieFallbackRank: number | undefined
+  let slot = 0
+
+  for (const group of sortedGroups) {
+    const platform = platformForProvider(group.id)
+    if (platform === MAGPIE_PLATFORM_ID) {
+      for (const m of group.models ?? []) {
+        const owner = m.id.split('/')[0]?.trim().toLowerCase()
+        if (owner && !magpieOwnerRank.has(owner)) {
+          magpieOwnerRank.set(owner, slot++)
+        }
+      }
+      if (magpieFallbackRank === undefined) magpieFallbackRank = slot++
+      continue
+    }
+    const ref = providerKeyRefs[group.id]
+    if (ref && !refRank.has(ref)) refRank.set(ref, slot)
+    const probeId = `probe#${group.id}`
+    if (!idRank.has(probeId)) idRank.set(probeId, slot)
+    if (platform && !platformRank.has(platform)) platformRank.set(platform, slot)
+    slot += 1
+  }
+
+  const fallback = slot
+  const rankOf = (p: PanelProvider): number => {
+    if (p.id.startsWith(`${MAGPIE_PLATFORM_ID}#`)) {
+      const owner = p.id.slice(MAGPIE_PLATFORM_ID.length + 1).split('/')[0]?.toLowerCase() ?? ''
+      return magpieOwnerRank.get(owner) ?? magpieFallbackRank ?? fallback
+    }
+    if (p.keyRef !== undefined) {
+      const byRef = refRank.get(p.keyRef)
+      if (byRef !== undefined) return byRef
+    }
+    const byId = idRank.get(p.id)
+    if (byId !== undefined) return byId
+    const base = p.id.startsWith('probe#') ? p.id : orderKey(p.id)
+    return platformRank.get(base) ?? fallback
+  }
+
+  return providers
+    .map((provider, index) => ({ provider, index, rank: rankOf(provider) }))
+    .sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank))
+    .map((entry) => entry.provider)
 }
 
 /**
- * 按手动顺序重排：命中的按 rank 升序在前，没命中的（新线路/新账号）保持
- * Host 顺序追加在后面。稳定排序——同组多账号行不会被拆开。
+ * 最终面板卡片排序：先算 DSH 模型默认顺序，再叠加用户自定义拖拽顺序。
+ * 切换当前会话模型不会改变卡片位置。
+ */
+export function orderProviders(
+  providers: readonly PanelProvider[],
+  customOrder: readonly string[] = [],
+  catalogGroups: readonly ModelCatalogGroupLike[] = [],
+  providerKeyRefs: Record<string, string> = {},
+): PanelProvider[] {
+  const baseline = defaultOrderProviders(providers, catalogGroups, providerKeyRefs)
+  return byCustomOrder(baseline, customOrder)
+}
+
+/**
+ * 按自定义顺序重排：优先匹配精确卡片 `id`（逐卡独立排序），未命中时回退匹配
+ * 旧版 `orderKey(id)` 组名（平滑兼容历史配置），仍未命中的新卡片保持默认相对顺序追加在末尾。
  */
 function byCustomOrder(providers: readonly PanelProvider[], customOrder: readonly string[]): PanelProvider[] {
   if (customOrder.length === 0) return [...providers]
@@ -101,7 +148,30 @@ function byCustomOrder(providers: readonly PanelProvider[], customOrder: readonl
   })
   const fallback = customOrder.length
   return providers
-    .map((provider, index) => ({ provider, index, rank: rank.get(orderKey(provider.id)) ?? fallback }))
+    .map((provider, index) => ({
+      provider,
+      index,
+      rank: rank.get(provider.id) ?? rank.get(orderKey(provider.id)) ?? fallback,
+    }))
     .sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank))
     .map((entry) => entry.provider)
+}
+
+/**
+ * 拖拽重排的纯数组移位：把 `fromIndex` 处的元素移到 `toIndex`（越界或原位时返回原副本）。
+ */
+export function moveItem<T>(items: readonly T[], fromIndex: number, toIndex: number): T[] {
+  const next = [...items]
+  if (
+    fromIndex < 0
+    || fromIndex >= next.length
+    || toIndex < 0
+    || toIndex >= next.length
+    || fromIndex === toIndex
+  ) {
+    return next
+  }
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved!)
+  return next
 }

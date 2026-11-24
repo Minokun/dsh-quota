@@ -15,7 +15,7 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
-import { orderKey, orderProviders, providerRowOf } from './panel-order.ts'
+import { moveItem, orderProviders, providerRowOf } from './panel-order.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
 import { formatEtaSpan } from './usage-alerts.ts'
 import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
@@ -189,41 +189,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
   const activeModel = state.sessionModel?.model ?? state.currentModel.model
   const rowFor = (provider: string, model?: string): PanelProvider | undefined =>
     providerRowOf(state.providers, provider, state.providerKeyRefs, model)
-  // 卡片顺序：手动顺序（panel-order.ts）> 当前在用平台置顶 > Host 顺序。
-  // 手动顺序里已经排过的平台不再被「换模型」抢位。
+  const activeRowId = rowFor(activeProvider, activeModel)?.id ?? ''
+  // 卡片顺序：自定义拖拽顺序 > DSH 模型选择框默认顺序（不再把当前在用卡片自动置顶）。
   const orderedProviders = orderProviders(
     state.providers,
-    activeProvider,
-    state.providerKeyRefs,
-    activeModel,
     state.providerOrder,
+    state.catalogGroups,
+    state.providerKeyRefs,
   )
-  // 排序模式下 ▲▼ 调顺序：按「平台组 key」整组移动（同平台多账号/多线路
-  // 保持相邻），乐观更新后由 client controller 落盘。
-  const moveProvider = (id: string, delta: -1 | 1): void => {
-    const keys: string[] = []
-    for (const p of orderedProviders) {
-      const key = orderKey(p.id)
-      if (!keys.includes(key)) keys.push(key)
-    }
-    const from = keys.indexOf(orderKey(id))
-    const to = from + delta
-    if (from < 0 || to < 0 || to >= keys.length) return
-    const [moved] = keys.splice(from, 1)
-    keys.splice(to, 0, moved!)
-    props.setProviderOrder(keys)
-  }
-  /** 当前行所在组在排序列表里的位置（首/尾时禁用相应按钮）。 */
-  const orderIndexOf = (id: string): number => {
-    const key = orderKey(id)
-    const keys: string[] = []
-    for (const p of orderedProviders) {
-      const k = orderKey(p.id)
-      if (!keys.includes(k)) keys.push(k)
-    }
-    return keys.indexOf(key)
-  }
-  const orderKeyCount = new Set(orderedProviders.map((p) => orderKey(p.id))).size
   const sessionSummary = state.sessionModel ? summarizeItems(rowFor(state.sessionModel.provider, state.sessionModel.model), state.lang) : ''
   // 默认模型的摘要同样在本地按当前语言拼（host 下发的 summary 文案固定中文）。
   const defaultSummary = summarizeItems(rowFor(state.currentModel.provider, state.currentModel.model), state.lang)
@@ -271,9 +244,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
     setMode(next)
     try { window.localStorage.setItem(MODE_KEY, next) } catch { /* private mode */ }
   }
-
-  // ── 排序模式：面板里直接调卡片顺序（▲▼，改动即时落盘）──────────────
-  const [orderMode, setOrderMode] = useState(false)
 
   // ── 本会话卡片：收/展状态（默认收起，localStorage 记住手动展开）────────
   const [sessionOpen, setSessionOpen] = useState(() => (typeof window === 'undefined' ? false : loadSessionOpen()))
@@ -402,6 +372,180 @@ export function QuotaPanel(props: QuotaPanelProps) {
     return () => { document.removeEventListener('pointerdown', onDown, true) }
   }, [state.open])
 
+  // ── 卡片拖拽自定义排序（⋮⋮ 手柄捕获 + 实时让位预览 + 边缘自动滚屏）────
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null)
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null)
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const cardDragRef = useRef<{
+    pointerId: number
+    cardId: string
+    initialIds: string[]
+    currentIds: string[]
+    lastClientY: number
+    scrollRaf: number | null
+  } | null>(null)
+
+  const providerById = new Map(state.providers.map((p) => [p.id, p]))
+  const displayedProviders = dragOrder
+    ? dragOrder.map((id) => providerById.get(id)).filter((p): p is PanelProvider => p !== undefined)
+    : orderedProviders
+
+  const stopCardAutoScroll = (): void => {
+    const d = cardDragRef.current
+    if (d && d.scrollRaf !== null) {
+      window.cancelAnimationFrame(d.scrollRaf)
+      d.scrollRaf = null
+    }
+  }
+
+  const reorderAtPointerY = (clientY: number): void => {
+    const d = cardDragRef.current
+    if (!d) return
+    const ids = d.currentIds
+    const from = ids.indexOf(d.cardId)
+    if (from < 0) return
+    let target = from
+    for (let i = from + 1; i < ids.length; i += 1) {
+      const el = cardRefs.current.get(ids[i]!)
+      if (!el) continue
+      const rect = el.getBoundingClientRect()
+      if (clientY > rect.top + rect.height / 2) target = i
+      else break
+    }
+    if (target === from) {
+      for (let i = from - 1; i >= 0; i -= 1) {
+        const el = cardRefs.current.get(ids[i]!)
+        if (!el) continue
+        const rect = el.getBoundingClientRect()
+        if (clientY < rect.top + rect.height / 2) target = i
+        else break
+      }
+    }
+    if (target !== from) {
+      const next = moveItem(ids, from, target)
+      d.currentIds = next
+      setDragOrder(next)
+    }
+  }
+
+  const syncEdgeAutoScroll = (): void => {
+    const d = cardDragRef.current
+    const scroller = panelRef.current
+    if (!d || !scroller) return
+    const EDGE_PX = 42
+    const MAX_STEP = 10
+    const computeStep = (): number => {
+      const cur = cardDragRef.current
+      const el = panelRef.current
+      if (!cur || !el) return 0
+      const r = el.getBoundingClientRect()
+      if (cur.lastClientY < r.top + EDGE_PX && el.scrollTop > 0) {
+        const ratio = Math.min(1, (r.top + EDGE_PX - cur.lastClientY) / EDGE_PX)
+        return -Math.max(2, Math.round(MAX_STEP * ratio))
+      }
+      if (cur.lastClientY > r.bottom - EDGE_PX && el.scrollTop + el.clientHeight < el.scrollHeight) {
+        const ratio = Math.min(1, (cur.lastClientY - (r.bottom - EDGE_PX)) / EDGE_PX)
+        return Math.max(2, Math.round(MAX_STEP * ratio))
+      }
+      return 0
+    }
+    if (computeStep() === 0) {
+      stopCardAutoScroll()
+      return
+    }
+    if (d.scrollRaf !== null) return
+    const tick = (): void => {
+      const cur = cardDragRef.current
+      const el = panelRef.current
+      if (!cur || !el) return
+      cur.scrollRaf = null
+      const step = computeStep()
+      if (step !== 0) {
+        el.scrollTop += step
+        reorderAtPointerY(cur.lastClientY)
+        cur.scrollRaf = window.requestAnimationFrame(tick)
+      }
+    }
+    d.scrollRaf = window.requestAnimationFrame(tick)
+  }
+
+  const cancelCardDrag = (): void => {
+    stopCardAutoScroll()
+    cardDragRef.current = null
+    setDraggingCardId(null)
+    setDragOrder(null)
+  }
+
+  const finishCardDrag = (): void => {
+    const d = cardDragRef.current
+    stopCardAutoScroll()
+    cardDragRef.current = null
+    setDraggingCardId(null)
+    setDragOrder(null)
+    if (!d) return
+    const changed = d.currentIds.length === d.initialIds.length
+      && d.currentIds.some((id, idx) => id !== d.initialIds[idx])
+    if (changed) props.setProviderOrder(d.currentIds)
+  }
+
+  const onCardDragDown = (e: ReactPointerEvent<HTMLSpanElement>, cardId: string): void => {
+    if (e.button !== 0 || orderedProviders.length < 2) return
+    e.preventDefault()
+    e.stopPropagation()
+    const initialIds = orderedProviders.map((x) => x.id)
+    cardDragRef.current = {
+      pointerId: e.pointerId,
+      cardId,
+      initialIds,
+      currentIds: initialIds,
+      lastClientY: e.clientY,
+      scrollRaf: null,
+    }
+    setDraggingCardId(cardId)
+    setDragOrder(initialIds)
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const onCardDragMove = (e: ReactPointerEvent<HTMLSpanElement>): void => {
+    const d = cardDragRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    d.lastClientY = e.clientY
+    reorderAtPointerY(e.clientY)
+    syncEdgeAutoScroll()
+  }
+
+  const onCardDragUp = (e: ReactPointerEvent<HTMLSpanElement>): void => {
+    const d = cardDragRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    finishCardDrag()
+  }
+
+  const onCardDragCancel = (e: ReactPointerEvent<HTMLSpanElement>): void => {
+    const d = cardDragRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    cancelCardDrag()
+  }
+
+  useEffect(() => {
+    if (!state.open && cardDragRef.current) cancelCardDrag()
+  }, [state.open])
+
+  useEffect(() => {
+    if (!draggingCardId) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      cancelCardDrag()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => { window.removeEventListener('keydown', onKeyDown, true) }
+  }, [draggingCardId])
+
+  useEffect(() => () => { stopCardAutoScroll() }, [])
+
   // 红点告警 Badge（两种形态共用）：只做计数提示、不拦截点击，确保用户点悬浮球
   // 任何位置都能先展开面板看清告警内容；标为已读放在面板头部「⚠ N 项告警」按钮上。
   const badge = alerts > 0 && <span className="dq-alert">{alerts > 99 ? '99+' : alerts}</span>
@@ -512,15 +656,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
               <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
                 {mode === 'pill' ? '◯' : '▬'}
               </button>
-              <button
-                type="button"
-                className={`dq-btn ${orderMode ? 'dq-btn--primary' : 'dq-btn--ghost'}`}
-                title={t('order.hint')}
-                aria-pressed={orderMode}
-                onClick={() => { setOrderMode((v) => !v) }}
-              >
-                {orderMode ? t('order.on') : t('order.toggle')}
-              </button>
               <button type="button" className="dq-btn dq-btn--primary" disabled={busy} onClick={() => { props.refresh() }}>
                 {busy ? t('panel.refreshing') : t('panel.refresh')}
               </button>
@@ -587,13 +722,34 @@ export function QuotaPanel(props: QuotaPanelProps) {
                 )}
               </div>
             )}
-            {orderedProviders.map((p) => {
+            {displayedProviders.map((p) => {
               const cardAlerts = providerAlertLines(p, state, t)
               const cardAlertCount = providerAlertCount(p, state)
+              const isActiveCard = activeRowId !== '' && p.id === activeRowId
+              const isDraggingThis = draggingCardId === p.id
               return (
-              <div key={p.id} className={`dq-provider${cardAlertCount > 0 ? ' dq-provider--alert' : ''}`}>
+              <div
+                key={p.id}
+                ref={(el) => {
+                  if (el) cardRefs.current.set(p.id, el)
+                  else cardRefs.current.delete(p.id)
+                }}
+                className={`dq-provider${cardAlertCount > 0 ? ' dq-provider--alert' : ''}${isActiveCard ? ' dq-provider--active' : ''}${isDraggingThis ? ' dq-provider--dragging' : ''}`}
+              >
                 <div className="dq-provider-head">
-                  <span className="dq-provider-name">{p.label}</span>
+                  <span
+                    className={`dq-drag-handle${displayedProviders.length < 2 ? ' dq-drag-handle--disabled' : ''}`}
+                    title={displayedProviders.length >= 2 ? t('order.dragHint') : undefined}
+                    aria-hidden="true"
+                    onPointerDown={(e) => { onCardDragDown(e, p.id) }}
+                    onPointerMove={onCardDragMove}
+                    onPointerUp={onCardDragUp}
+                    onPointerCancel={onCardDragCancel}
+                  >⋮⋮</span>
+                  <span className="dq-provider-name" title={p.label}>{p.label}</span>
+                  {isActiveCard && (
+                    <span className="dq-active-chip" title={modelFrom}>{t('provider.active')}</span>
+                  )}
                   {cardAlertCount > 0 && (
                     <span className="dq-alert-chip" title={cardAlerts.join('\n')}>
                       {cardAlertCount > 1 ? `⚠ ${cardAlertCount}` : '⚠'}
@@ -601,24 +757,6 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   )}
                   {p.via && <span className={`dq-badge ${p.via === 'api' ? 'dq-badge--api' : 'dq-badge--mcp'}`}>{p.via === 'api' ? 'API' : 'MCP'}</span>}
                   <span className={`dq-badge ${badgeClass(p.status)}`}>{t(`status.${p.status}` as LocaleKey)}</span>
-                  {orderMode && (
-                    <span className="dq-order-btns">
-                      <button
-                        type="button"
-                        className="dq-btn dq-btn--ghost dq-order"
-                        title={t('order.up')}
-                        disabled={orderIndexOf(p.id) <= 0}
-                        onClick={() => { moveProvider(p.id, -1) }}
-                      >▲</button>
-                      <button
-                        type="button"
-                        className="dq-btn dq-btn--ghost dq-order"
-                        title={t('order.down')}
-                        disabled={orderIndexOf(p.id) < 0 || orderIndexOf(p.id) >= orderKeyCount - 1}
-                        onClick={() => { moveProvider(p.id, 1) }}
-                      >▼</button>
-                    </span>
-                  )}
                   <button
                     type="button"
                     className="dq-btn dq-btn--ghost dq-probe"
@@ -792,12 +930,24 @@ export function QuotaPanel(props: QuotaPanelProps) {
              </div>
             {state.formError && <div className="dq-provider-msg" style={{ color: '#e74c3c' }}>{state.formError}</div>}
           </div>
-          <div className="dq-foot">
-            {state.refreshedAt
-              ? t('panel.footer.refreshedAt', { time: new Date(state.refreshedAt).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US') })
-              : t('panel.footer.never')}
-            {totalCount > 0 && (
-              <span className="dq-foot-count">{t('panel.normalCount', { ok: okCount, total: totalCount })}</span>
+          <div className={`dq-foot${state.providerOrder.length > 0 ? ' dq-foot--split' : ''}`}>
+            <span>
+              {state.refreshedAt
+                ? t('panel.footer.refreshedAt', { time: new Date(state.refreshedAt).toLocaleString(state.lang === 'zh' ? 'zh-CN' : 'en-US') })
+                : t('panel.footer.never')}
+              {totalCount > 0 && (
+                <span className="dq-foot-count">{t('panel.normalCount', { ok: okCount, total: totalCount })}</span>
+              )}
+            </span>
+            {state.providerOrder.length > 0 && (
+              <button
+                type="button"
+                className="dq-foot-reset"
+                title={t('order.resetTitle')}
+                onClick={() => { props.setProviderOrder([]) }}
+              >
+                {t('order.reset')}
+              </button>
             )}
           </div>
         </div>

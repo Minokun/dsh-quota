@@ -71,10 +71,20 @@ export interface CustomDraft {
   quotaPerUnit: string
 }
 
+/** DSH 模型目录里的一个供应商分组（结构子集，用于对齐默认卡片顺序）。 */
+export interface ModelCatalogGroupLike {
+  readonly id: string
+  readonly models?: ReadonlyArray<{ readonly id: string }>
+}
+
 /** One session's model directory (structural face of the model-selection plugin's ModelDirectory). */
 export interface ModelDirectoryLike {
   store: {
-    getSnapshot(): { current: { provider: string; model: string } | null; status?: string }
+    getSnapshot(): {
+      current: { provider: string; model: string } | null
+      groups?: readonly ModelCatalogGroupLike[]
+      status?: string
+    }
     subscribe(fn: () => void): () => void
   }
   /** Pulls the session's advisory directory (current included) from the host. */
@@ -161,8 +171,10 @@ export interface QuotaPanelState {
   keyPlatforms: Array<{ id: string; label: string }>
   /** DSH 模型供应商 id → apiKeyEnv（host 下发，pill 精确对应卡片）。 */
   providerKeyRefs: Record<string, string>
-  /** 用户手动排的面板卡片顺序（平台组 key，见 panel-order.ts；空 = 未手动排序）。 */
+  /** 用户拖拽保存的面板卡片顺序（卡片 id 序列，见 panel-order.ts；空 = 跟随 DSH 模型顺序）。 */
   providerOrder: string[]
+  /** DSH 模型选择器已加载的分组列表（细化 Magpie 等网关内部子卡默认顺序）。 */
+  catalogGroups: ModelCatalogGroupLike[]
   /** 登录态失效、可一键重登的平台（悬浮球上方提醒条）。 */
   loginAlerts: Array<{ id: string; label: string }>
   /** 用量告警（悬浮球 toast：越阈值跨越 + 预计耗尽，见 usage-alerts.ts）。 */
@@ -238,6 +250,7 @@ const INITIAL: QuotaPanelState = {
   keyPlatforms: [],
   providerKeyRefs: {},
   providerOrder: [],
+  catalogGroups: [],
   loginAlerts: [],
   usageAlerts: [],
   trends: {},
@@ -332,12 +345,18 @@ export class QuotaPanelController {
       return
     }
     const store = directory.store
-    const applyCurrent = (): void => this.patch({ sessionModel: store.getSnapshot().current ?? null })
+    const applyCurrent = (): void => {
+      const snap = store.getSnapshot()
+      this.patch({
+        sessionModel: snap.current ?? null,
+        ...(snap.groups && snap.groups.length > 0 ? { catalogGroups: [...snap.groups] } : {}),
+      })
+    }
     applyCurrent()
     // A directory we resolved first never had its entries opened, so its
     // store still sits at idle/current:null — pull the selection ourselves.
     const snap = store.getSnapshot()
-    if (snap.current === null && snap.status === 'idle' && typeof directory.load === 'function') {
+    if ((snap.current === null || !snap.groups || snap.groups.length === 0) && snap.status === 'idle' && typeof directory.load === 'function') {
       directory.load().catch(() => undefined)
     }
     this.unwatchModel = store.subscribe(applyCurrent)
