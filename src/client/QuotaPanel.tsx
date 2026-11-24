@@ -17,10 +17,13 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { summarizeItems, type PanelItem, type PanelProvider, type QuotaPanelFace, type QuotaPanelState } from './controller.ts'
 import { moveItem, orderProviders, providerRowOf } from './panel-order.ts'
 import { alertCount, alertLines, providerAlertCount, providerAlertLines } from './alerts.ts'
-import { formatEtaSpan } from './usage-alerts.ts'
-import { visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
-import { sessionCardNote, sessionCardVisible, sessionUsageRows, sessionUsageTotal } from './session-card.ts'
-import { estimateSessionCost, formatTokens, formatUsd } from './pricing.ts'
+import { formatEtaSpan, willResetBeforeEta } from './usage-alerts.ts'
+import { selectHeadlineWindow } from '../window-rank.ts'
+import { buildDiagnosticReport, classifyQuotaIssue, redactSecrets } from '../diagnostics.ts'
+import { resolveEntryVisibility } from './dock-logic.ts'
+import { visibleSessionCwdOf, visibleSessionIdOf, sessionTokenUsageOf } from './session-model.ts'
+import { deriveSessionSpendView, sessionCardNote, sessionCardVisible, sessionUsageRows } from './session-card.ts'
+import { formatTokens } from './pricing.ts'
 import { billingLine } from './billing-line.ts'
 import { cardSpeedsOf, speedTone, type CardSpeedView } from './speed-line.ts'
 import { sparklinePoints } from './sparkline.ts'
@@ -197,10 +200,9 @@ function loadSessionOpen(): boolean {
   try { return window.localStorage.getItem(SESSION_OPEN_KEY) === '1' } catch { return false }
 }
 
-/** The headline percent item of a provider card (5h/周 window preferred). */
-function headlineItem(p: PanelProvider): PanelItem | undefined {
-  const withPct = p.items.filter((i) => i.percent !== undefined)
-  return withPct.find((i) => /窗口|周/.test(i.label)) ?? withPct[0]
+/** The headline percent item of a provider card (tightest window first). */
+export function headlineItem(p: PanelProvider): PanelItem | undefined {
+  return selectHeadlineWindow(p.items)
 }
 
 /** Ring geometry (SVG viewBox 46×46). */
@@ -225,6 +227,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // model — and since a session's model switch also saves that default, it
   // never came back. Falls back to the host default-model summary.
   const currentSessionId = props.useSessions?.(visibleSessionIdOf)
+  const currentSessionCwd = props.useSessions?.(visibleSessionCwdOf)
   // 本会话 token 用量投影（root 作用域可读）：selector 直接返回
   // values.tokenUsage 对象引用，发布不变时不会触发重渲染。
   const tokenUsage = props.useSessions?.(sessionTokenUsageOf)
@@ -255,28 +258,35 @@ export function QuotaPanel(props: QuotaPanelProps) {
   // Pill 主文案：当前模型名（会话优先，默认模型兜底，都没有才显示"会员额度"）。
   const modelName = state.sessionModel?.model || state.currentModel.model || ''
 
-  // ── 本会话 token 用量卡片数据 ───────────────────────────────────
-  // 卡片可见性只看「屏幕上有没有会话」：以前绑在「四桶之和 > 0」上，新会话 /
-  // 投影还没下发的那一帧会让整条可折叠的 token 记录凭空消失（用户报的
-  // 「顶上那个 token 记录没了」正是它）。没有用量时给占位文案，而不是抽掉卡片。
-  // 成本估算只在价格表命中（四桶单价齐全）时给出，否则只显示 token 计数
-  // （estimateSessionCost 返回 undefined）。
-  const usageRows = sessionUsageRows(tokenUsage)
+  // ── 本会话 token 用量与今日三层账本数据 ─────────────────────────
+  const billingProvider = rowFor((state.sessionModel ?? state.currentModel).provider, (state.sessionModel ?? state.currentModel).model)
+  const isSubscriptionPlan = Boolean(
+    billingProvider
+    && billingProvider.status === 'ok'
+    && billingProvider.items.some((i) => i.percent !== undefined)
+    && !billingProvider.items.some((i) => /余额|balance/i.test(i.label)),
+  )
+  const spendView = deriveSessionSpendView({
+    sessionId: currentSessionId ?? undefined,
+    sessionCwd: currentSessionCwd ?? undefined,
+    activeProvider,
+    activeModel,
+    tokenUsage,
+    ledger: state.ledger,
+    isSubscriptionPlan,
+    t,
+  })
+  const usageRows = sessionUsageRows(spendView.effectiveUsage, { includeCacheWrite: true })
   const showUsageCard = sessionCardVisible(
     currentSessionId !== undefined || state.sessionModel !== null,
-    tokenUsage,
+    spendView.effectiveUsage,
   )
-  const sessionNote = sessionCardNote(tokenUsage)
+  const sessionNote = sessionCardNote(spendView.effectiveUsage)
   const sessionModelLabel = state.sessionModel ? `${state.sessionModel.provider}/${state.sessionModel.model}` : ''
-  // 成本估算按四桶总量判断（含不成行的缓存写），不是只按显示出来的三行。
-  const usageCost = sessionUsageTotal(tokenUsage) > 0
-    ? estimateSessionCost(state.sessionModel?.model ?? state.currentModel.model, tokenUsage!)
-    : undefined
-  // 成本文案（有价格才生成）。
-  const costText = usageCost ? t('session.card.cost', { cost: `$${formatUsd(usageCost.usd)}` }) : ''
+  const costText = spendView.fullCostText
+  const shortCostText = spendView.shortCostText
   // 计费周期行：会话模型所在平台按自身计费形态（周/月/短窗口/余额）
   // 给「本周消耗 / 预计耗尽」一句话（billing-line.ts 纯函数）。
-  const billingProvider = rowFor((state.sessionModel ?? state.currentModel).provider, (state.sessionModel ?? state.currentModel).model)
   const billingText = showUsageCard ? billingLine(billingProvider, t) : ''
 
   // 红点 = 用量越阈值条目 + 查询失败平台 + 登录失效提醒；面板头部、悬浮球
@@ -414,6 +424,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
     if (!state.open) return
     const onDown = (e: PointerEvent): void => {
       const root = rootRef.current
+      if (e.target instanceof Element && e.target.closest('[data-dsh-quota-trigger]')) return
       if (root && e.target instanceof Node && !root.contains(e.target)) props.close()
     }
     document.addEventListener('pointerdown', onDown, true)
@@ -701,6 +712,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
               )}
             </div>
             <div className="dq-panel-actions">
+              <button
+                type="button"
+                className="dq-btn dq-btn--ghost"
+                title={t('display.switchTitle', { mode: t(`display.${state.displayMode}`) })}
+                onClick={() => { props.cycleDisplayMode() }}
+              >
+                {t(`display.${state.displayMode}`)}
+              </button>
               <button type="button" className="dq-btn dq-btn--ghost" title={mode === 'pill' ? t('mode.toRing') : t('mode.toPill')} onClick={toggleMode}>
                 {mode === 'pill' ? '◯' : '▬'}
               </button>
@@ -711,9 +730,46 @@ export function QuotaPanel(props: QuotaPanelProps) {
             </div>
           </div>
           <div className="dq-panel-body">
-            {state.loaded && state.providers.length === 0 && (
-              <div className="dq-empty">{t('panel.empty')}</div>
-            )}
+            {state.loaded && state.providers.length === 0 && (() => {
+              const visibleCandidates = state.candidates.filter((c) => !state.ignoredCandidates.includes(c.id))
+              return (
+                <div className="dq-onboard">
+                  <div className="dq-empty" style={{ padding: 0 }}>{t('panel.empty')}</div>
+                  {visibleCandidates.length > 0
+                    ? (
+                      <>
+                        <span className="dq-keys-note">{t('onboard.candidatesTitle')}</span>
+                        {visibleCandidates.map((c) => (
+                          <div key={c.id} className="dq-onboard-cand">
+                            <span style={{ fontWeight: 600 }}>{c.label}</span>
+                            <span className="dq-custom-ref">{c.keyRef}</span>
+                            <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.prefillCandidate(c) }}>
+                              {t('onboard.prefill')}
+                            </button>
+                            <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.ignoreCandidate(c.id) }}>
+                              {t('onboard.ignore')}
+                            </button>
+                          </div>
+                        ))}
+                      </>
+                    )
+                    : (
+                      <div className="dq-onboard-actions">
+                        {!state.showKeys && (
+                          <button type="button" className="dq-btn dq-btn--primary" onClick={() => { props.toggleKeys() }}>
+                            {t('onboard.quickKeys')}
+                          </button>
+                        )}
+                        {!state.showCustom && (
+                          <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.toggleCustom() }}>
+                            {t('onboard.quickCustom')}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                </div>
+              )
+            })()}
             {showUsageCard && (
               <div className="dq-provider dq-provider--session">
                 <button
@@ -726,8 +782,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   <span className="dq-keys-caret">{sessionOpen ? '▾' : '▸'}</span>
                   <span className="dq-provider-name">{t('session.card.title')}</span>
                   {sessionModelLabel && <span className="dq-badge dq-badge--api">{sessionModelLabel}</span>}
-                  {!sessionOpen && (usageCost
-                    ? <span className="dq-session-peek" title={costText}>{costText}</span>
+                  {!sessionOpen && (shortCostText
+                    ? <span className="dq-session-peek" title={costText}>{shortCostText}</span>
                     : sessionNote !== '' && (
                       <span
                         className="dq-session-peek"
@@ -756,9 +812,29 @@ export function QuotaPanel(props: QuotaPanelProps) {
                           {t(sessionNote === 'pending' ? 'session.card.pending' : 'session.card.empty')}
                         </span>
                       )}
-                    {usageCost && (
-                      <span className="dq-provider-key" title={costText}>
+                    {costText && (
+                      <span className="dq-provider-key dq-session-billing" title={costText}>
                         {costText}
+                      </span>
+                    )}
+                    {spendView.extraActivityLine && (
+                      <span className="dq-provider-key dq-session-billing">
+                        {spendView.extraActivityLine}
+                      </span>
+                    )}
+                    {spendView.modelSplitLine && (
+                      <span className="dq-provider-key dq-session-billing">
+                        {spendView.modelSplitLine}
+                      </span>
+                    )}
+                    {spendView.unmeteredLine && (
+                      <span className="dq-provider-key dq-session-billing">
+                        {spendView.unmeteredLine}
+                      </span>
+                    )}
+                    {spendView.rollupLine && (
+                      <span className="dq-provider-key dq-session-billing">
+                        {spendView.rollupLine}
                       </span>
                     )}
                     {billingText && (
@@ -844,10 +920,29 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   <span className={`dq-probe-result ${state.probeResults[p.id]!.ok ? 'dq-probe-result--ok' : 'dq-probe-result--err'}`}>
                     {state.probeResults[p.id]!.ok
                       ? t('probe.ok', { ms: state.probeResults[p.id]!.ms })
-                      : t('probe.fail', { message: state.probeResults[p.id]!.message ?? '' })}
+                      : t('probe.fail', { message: redactSecrets(state.probeResults[p.id]!.message ?? '') })}
                   </span>
                 )}
-                {p.message && <span className="dq-provider-msg">{p.message}</span>}
+                {p.message && <span className="dq-provider-msg">{redactSecrets(p.message)}</span>}
+                {(p.status !== 'ok' || state.probeResults[p.id]?.ok === false) && (() => {
+                  const pr = state.probeResults[p.id]
+                  const diag = classifyQuotaIssue({
+                    id: p.id,
+                    label: p.label,
+                    status: p.status,
+                    message: p.message,
+                    via: p.via,
+                    keyRef: p.keyRef,
+                    probeOk: pr?.ok,
+                    probeMs: pr?.ms,
+                    probeMessage: pr?.message,
+                  })
+                  return (
+                    <span className="dq-diag-hint">
+                      {state.lang === 'en' ? diag.actionEn : diag.actionZh}
+                    </span>
+                  )
+                })()}
                 {(() => {
                   const loginish = p.status === 'error' && Boolean(p.message) && /未登录|未授权|未认证|401|登录|login|unauthorized/i.test(p.message ?? '')
                   if (!loginish || !state.loginFlows[p.id]) return null
@@ -900,9 +995,14 @@ export function QuotaPanel(props: QuotaPanelProps) {
                             <span className="dq-item-alert" title={t('alert.usage', { label: p.label, item: item.label, percent: Math.round(percent ?? 0) })}>{'⚠'}</span>
                           )}
                           {reset && <span className="dq-item-reset">{reset}</span>}
-                          {item.etaMinutes !== undefined && (
+                          {item.etaMinutes !== undefined && item.depletesBeforeReset !== false && !willResetBeforeEta(item.etaMinutes, item.resetAt, Date.now()) && (
                             <span className="dq-item-eta" title={t('eta.title')}>
                               {item.burnRatePerHour !== undefined ? `≈${item.burnRatePerHour}/h · ` : ''}{etaText(item.etaMinutes, t)}
+                            </span>
+                          )}
+                          {p.status === 'ok' && !overThreshold && item.depletesBeforeReset === true && (
+                            <span className="dq-item-pace" title={t('pace.warnTitle')}>
+                              {t('pace.warn')}
                             </span>
                           )}
                         </div>
@@ -933,6 +1033,8 @@ export function QuotaPanel(props: QuotaPanelProps) {
                   <div key={kp.id} className="dq-key-row">
                     <label title={configured && keyInfo?.ref ? t('keys.configuredTitle', { ref: keyInfo.ref, source: sourceText(keyInfo.source, t) }) : t('keys.unconfiguredTitle')}>
                       {kp.label}
+                      {kp.verification === 'verified' && <span className="dq-verify-ok" title={t('keys.verifiedTitle')}>✓</span>}
+                      {kp.verification === 'community' && <span className="dq-verify-comm" title={t('keys.communityTitle')}>{t('keys.communityBadge')}</span>}
                     </label>
                     <input
                       className="dq-input"
@@ -961,11 +1063,38 @@ export function QuotaPanel(props: QuotaPanelProps) {
              </div>
 
              <div className="dq-keys">
-               <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleCustom() }}>
-                 <span className="dq-keys-caret">{state.showCustom ? '▾' : '▸'}</span>
-                 {t('custom.title')}
-                 <span className="dq-keys-hint">{t('custom.hint')}</span>
-               </button>
+               {(() => {
+                 const visibleCandidates = state.candidates.filter((c) => !state.ignoredCandidates.includes(c.id))
+                 return (
+                   <>
+                     <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleCustom() }}>
+                       <span className="dq-keys-caret">{state.showCustom ? '▾' : '▸'}</span>
+                       {t('custom.title')}
+                       <span className="dq-keys-hint">
+                         {state.providers.length > 0 && visibleCandidates.length > 0
+                           ? t('custom.candidatesBadge', { n: visibleCandidates.length })
+                           : t('custom.hint')}
+                       </span>
+                     </button>
+                     {state.showCustom && state.providers.length > 0 && visibleCandidates.length > 0 && (
+                       <div className="dq-diag-list">
+                         {visibleCandidates.map((c) => (
+                           <div key={c.id} className="dq-onboard-cand">
+                             <span>{c.label}</span>
+                             <span className="dq-custom-ref">{c.keyRef}</span>
+                             <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.prefillCandidate(c) }}>
+                               {t('onboard.prefill')}
+                             </button>
+                             <button type="button" className="dq-btn dq-btn--ghost" onClick={() => { props.ignoreCandidate(c.id) }}>
+                               {t('onboard.ignore')}
+                             </button>
+                           </div>
+                         ))}
+                       </div>
+                     )}
+                   </>
+                 )
+               })()}
                {state.showCustom && (
                  <>
                    {state.customPlatforms.map((cp) => (
@@ -1001,6 +1130,65 @@ export function QuotaPanel(props: QuotaPanelProps) {
                  </>
                )}
              </div>
+
+             <div className="dq-keys">
+               {(() => {
+                 const diagReport = buildDiagnosticReport(
+                   state.providers.map((p) => {
+                     const pr = state.probeResults[p.id]
+                     return {
+                       id: p.id,
+                       label: p.label,
+                       status: p.status,
+                       message: p.message,
+                       via: p.via,
+                       keyRef: p.keyRef,
+                       probeOk: pr?.ok,
+                       probeMs: pr?.ms,
+                       probeMessage: pr?.message,
+                     }
+                   }),
+                   { lang: state.lang, exposeAgentTool: state.exposeAgentTool },
+                 )
+                 return (
+                   <>
+                     <button type="button" className="dq-keys-toggle" onClick={() => { props.toggleDiag() }}>
+                       <span className="dq-keys-caret">{state.showDiag ? '▾' : '▸'}</span>
+                       {t('diag.title')}
+                       <span className="dq-keys-hint">{diagReport.verdictLine}</span>
+                     </button>
+                     {state.showDiag && (
+                       <>
+                         <div className="dq-key-row">
+                           <span className="dq-diag-verdict">{diagReport.verdictLine}</span>
+                           <button type="button" className="dq-btn dq-btn--ghost" style={{ marginLeft: 'auto' }} onClick={() => { props.copyDiagnostics() }}>
+                             {state.diagCopied ? t('diag.copied') : t('diag.copy')}
+                           </button>
+                         </div>
+                         {diagReport.entries.filter((e) => e.severity !== 'pass').length > 0 && (
+                           <div className="dq-diag-list">
+                             {diagReport.entries.filter((e) => e.severity !== 'pass').map((e) => (
+                               <span key={e.id}>
+                                 [{e.severity.toUpperCase()}] {e.label} ({e.code}): {state.lang === 'en' ? e.actionEn : e.actionZh}
+                               </span>
+                             ))}
+                           </div>
+                         )}
+                         <label className="dq-diag-check">
+                           <input
+                             type="checkbox"
+                             checked={state.exposeAgentTool}
+                             onChange={(ev) => { props.setExposeAgentTool(ev.currentTarget.checked) }}
+                           />
+                           <span>{t('diag.exposeTool')}</span>
+                         </label>
+                         <span className="dq-keys-note">{t('diag.exposeToolHint')}</span>
+                       </>
+                     )}
+                   </>
+                 )
+               })()}
+             </div>
             {state.formError && <div className="dq-provider-msg" style={{ color: '#e74c3c' }}>{state.formError}</div>}
           </div>
           <div className={`dq-foot${state.providerOrder.length > 0 ? ' dq-foot--split' : ''}`}>
@@ -1025,7 +1213,7 @@ export function QuotaPanel(props: QuotaPanelProps) {
           </div>
         </div>
       )}
-      {floater}
+      {resolveEntryVisibility(state.displayMode, state.dockMountCount).showFloater && floater}
     </div>
   )
 }

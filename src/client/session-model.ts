@@ -27,6 +27,7 @@ export interface TokenUsageView {
 /** One `SessionListState` row, structurally typed (no runtime dependency). */
 interface SessionRowLike {
   id?: unknown
+  cwd?: unknown
   retainedBy?: Record<string, number | undefined> | undefined
 }
 
@@ -48,6 +49,7 @@ type RealRow = RealById[keyof RealById]
  */
 export type SessionSnapshotCanary = [
   RealRow['id'],
+  RealRow['cwd'],
   RealRow['retainedBy'],
   Assert<RealRow extends SessionRowLike ? true : false>,
 ]
@@ -94,4 +96,15 @@ export function sessionTokenUsageOf(snapshot: unknown): TokenUsageView | undefin
   if (!id) return undefined
   const s = snapshot as ProjectionsSnapshotLike | null | undefined
   return s?.projectionsBySession?.[id]?.values?.tokenUsage
+}
+
+/**
+ * Read the visible session's workspace directory (`cwd`) for 3-tier daily rollup.
+ */
+export function visibleSessionCwdOf(snapshot: unknown): string | undefined {
+  const id = visibleSessionIdOf(snapshot)
+  if (!id) return undefined
+  const s = snapshot as SessionsSnapshotLike | null | undefined
+  const cwd = s?.byId?.[id]?.cwd
+  return typeof cwd === 'string' && cwd ? cwd : undefined
 }

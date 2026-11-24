@@ -51,6 +51,8 @@ export interface QuotaItem {
   burnRatePerHour?: number
   /** Estimated minutes until depletion at the current burn rate. */
   etaMinutes?: number
+  /** True when the current burn rate will exhaust the window before `resetAt`; false when `resetAt` comes first. */
+  depletesBeforeReset?: boolean
   /** 余额型条目：近 7 天实测消耗（日历日均 ×7；不足 7 天按已观测跨度折算，与余额同币种）。 */
   weeklySpent?: number
   /** 余额型条目：上面这个数用到的实测跨度（毫秒），客户端标注「按 N 天实测折算」。 */
@@ -151,6 +153,10 @@ export interface Config {
   history: Record<string, number[][]>
   /** 用量占比达到该百分比即计入红点告警（默认 85，与进度条红色档一致）。 */
   alertPercent: number
+  /** 是否向 Agent 暴露 `quota_refresh` 工具（默认 false，零上下文 token 损耗；定时任务需要时可开启）。 */
+  exposeAgentTool: boolean
+  /** 内置直连平台的接口地址覆盖（platformId -> https origin 或 endpoint，经 assertPublicHttpsUrl 校验）。 */
+  endpointOverrides: Record<string, string>
   /** DSH 当前默认模型及其额度摘要（pill 展示；取不到时字段为空）。 */
   currentModel: {
     /** 模型供应商 id，如 kimi-coding。 */
@@ -201,6 +207,8 @@ export const Config: z<Config> = z.object({
   providerKeyRefs: z.dict(z.string()).default({}),
   history: z.dict(z.array(z.array(z.number()))).default({}),
   alertPercent: z.number().default(85),
+  exposeAgentTool: live(z.boolean().default(false)),
+  endpointOverrides: live(z.dict(z.string()).default({})),
   currentModel: z.object({
     provider: z.string().default(''),
     model: z.string().default(''),
@@ -225,6 +233,7 @@ export const Config: z<Config> = z.object({
       display: z.string(),
       burnRatePerHour: z.number(),
       etaMinutes: z.number(),
+      depletesBeforeReset: z.boolean(),
       weeklySpent: z.number(),
       spendWindowMs: z.number(),
     })).default([]),

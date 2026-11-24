@@ -22,7 +22,7 @@ DEST="$ROOT/node_modules/@deepseek-ai"
 # Every dsh package this plugin imports (runtime or type-only).
 PACKAGES="cordis schemastery dsh-tools dsh-settings dsh-credentials dsh-session \
 dsh-host-webserver dsh-client-store dsh-client-ui-slots dsh-client-ui-layout dsh-client-ui-renderer \
-dsh-client-ui-session dsh-api-session-controller dsh-client-ui-model-selection"
+dsh-client-ui-session dsh-client-ui-conversation dsh-api-session-controller dsh-client-ui-model-selection"
 
 # Where each package lives inside a harness checkout (used for fallback/vendor
 # resolution and for `--harness` mode).
@@ -40,6 +40,7 @@ harness_path_of() {
     dsh-client-ui-layout) echo packages/client/ui-layout ;;
     dsh-client-ui-renderer) echo packages/client/ui-renderer ;;
     dsh-client-ui-session) echo packages/client/ui-session ;;
+    dsh-client-ui-conversation) echo packages/client/ui-conversation ;;
     dsh-api-session-controller) echo packages/api/session-controller ;;
     dsh-client-ui-model-selection) echo packages/client/ui-model-selection ;;
     *) echo "" ;;

@@ -7,3 +7,4 @@ lib/
 
 # vendored packages keep their lib/ (the lib/ rule above is for our build output)
 !vendor/dsh-client-store/lib/
+!vendor/dsh-client-ui-slots/lib/

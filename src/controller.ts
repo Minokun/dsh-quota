@@ -15,7 +15,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Config, CustomHttpPlatform, CustomMcpPlatform, LoginFlow, ProviderSnapshot, QuotaItem } from './config.ts'
 import { EMPTY_CURRENT_MODEL, KEY_REFS } from './config.ts'
-import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, opendesignVelaControlKey, type DirectAdapter } from './direct.ts'
+import { CATALOG_EXTRA, CUSTOM_FORMATS, DIRECT_ADAPTERS, FORMATS, assertPublicHttpsUrl, customHttpFetch, opendesignVelaControlKey, type DirectAdapter, type VerificationTier } from './direct.ts'
+import { computeUntrackedCandidates, type CandidatePlatform } from './onboarding.ts'
 import {
   DEEPSEEK_ACCOUNT_LABEL,
   DEEPSEEK_ACCOUNT_REF,
@@ -31,6 +32,9 @@ import { ARK_AK_REFS, ARK_LABEL, ARK_PLATFORM_ID, ARK_SK_REFS, arkKeyPairError, 
 import { platformForProvider } from './platform-map.ts'
 import type { QuotaStateStore } from './state-store.ts'
 import type { ModelSpeedSummary } from './speed-sampler.ts'
+import type { LedgerWireSnapshot } from './session-ledger.ts'
+import { rankHeadlineItems } from './window-rank.ts'
+import { buildDiagnosticReport, type DiagnosticReport } from './diagnostics.ts'
 
 export type { QuotaStateStore } from './state-store.ts'
 
@@ -138,12 +142,23 @@ export interface PlatformRefHint {
  * @returns refs beyond the adapter's own, each tagged with its provider id,
  *   in provider order and deduplicated by ref.
  */
-export function platformRefHints(adapter: DirectAdapter, providers: readonly LlmProviderInfo[]): PlatformRefHint[] {
+export function platformRefHints(
+  adapter: DirectAdapter,
+  providers: readonly LlmProviderInfo[],
+  endpointOverrides?: Record<string, string>,
+): PlatformRefHint[] {
   // Admin-only endpoints (OpenAI/Anthropic organization keys) never take a
   // normal model-provider key as an extra account.
   if (adapter.extraRefsFromProviders === false) return []
   const known = new Set([...adapter.keyRefs, ...adapter.envKeys])
   const origins = new Set(adapter.origins ?? [])
+  const overrideRaw = endpointOverrides?.[adapter.id]?.trim()
+  if (overrideRaw) {
+    try {
+      const safe = assertPublicHttpsUrl(overrideRaw)
+      origins.add(new URL(safe).origin)
+    } catch { /* invalid override is surfaced on fetch, never weakens origin guard */ }
+  }
   const out: PlatformRefHint[] = []
   for (const lp of providers) {
     if (!lp.keyRef || known.has(lp.keyRef)) continue
@@ -249,9 +264,8 @@ function summarize(snapshot: ProviderSnapshot): string {
     const tag = shortTag(item.label)
     return tag ? `${tag} ${value}` : value
   }
-  // Coding Plan 有多个窗口（5h/周…）时都显示，最多两条。
-  const headlines = snapshot.items.filter((i) => /窗口|周|余额|额度|金额|消耗/.test(i.label))
-  const parts = (headlines.length > 0 ? headlines : snapshot.items)
+  // Coding Plan 有多个窗口（5h/周…）时按紧迫度优先（重置前耗尽 > 占用率高 > 短周期），最多两条。
+  const parts = rankHeadlineItems(snapshot.items)
     .map(head)
     .filter((v): v is string => Boolean(v))
     .slice(0, 2)
@@ -300,7 +314,7 @@ export interface QuotaControllerFace {
   /** Describe configured keys (never the values): which ref supplies each platform. */
   keyStatus(): Promise<Record<string, { configured: boolean; source?: string; ref?: string; manual?: boolean }>>
   /** Platforms the panel's key manager covers (every direct/API-key row). */
-  keyPlatforms(): Array<{ id: string; label: string }>
+  keyPlatforms(): Array<{ id: string; label: string; verification?: VerificationTier; defaultEndpoint?: string }>
   /** Add one user-declared HTTP platform (persisted in the namespace). */
   addHttpPlatform(platform: CustomHttpPlatform): Promise<void>
   /** Remove one user-declared HTTP platform by id. */
@@ -323,6 +337,18 @@ export interface QuotaControllerFace {
   setSpeedSource(source: () => ModelSpeedSummary[]): void
   /** 当前逐模型测速结论（面板 /status 每次现取）。 */
   speed(): ModelSpeedSummary[]
+  /** 挂上会话/今日增量账本快照回调（Host 侧事件账本提供）。 */
+  setLedgerSource?(source: () => LedgerWireSnapshot): void
+  /** 当前会话账本与今日三层汇总快照。 */
+  ledger?(): LedgerWireSnapshot | undefined
+  /** Toggle whether `quota_refresh` is exposed to the LLM Agent toolset. */
+  setExposeAgentTool?(enabled: boolean): Promise<void>
+  /** Build a secret-redacted structured diagnostic report for the current state. */
+  diagnostics?(lang?: 'zh' | 'en'): DiagnosticReport
+  /** Untracked public-HTTPS DSH model providers eligible for 2-click onboarding. */
+  untrackedCandidates?(): CandidatePlatform[]
+  /** Set or clear a built-in adapter's HTTPS endpoint override (SSRF-validated). */
+  setEndpointOverride?(platformId: string, url: string): Promise<void>
 }
 
 export class QuotaController implements QuotaControllerFace {
@@ -362,6 +388,94 @@ export class QuotaController implements QuotaControllerFace {
     } catch {
       return []
     }
+  }
+
+  private ledgerSource: (() => LedgerWireSnapshot) | undefined
+
+  /** @inheritdoc */
+  setLedgerSource(source: () => LedgerWireSnapshot): void {
+    this.ledgerSource = source
+  }
+
+  /** @inheritdoc */
+  ledger(): LedgerWireSnapshot | undefined {
+    try {
+      return this.ledgerSource?.()
+    } catch {
+      return undefined
+    }
+  }
+
+  private agentToolListener: ((enabled: boolean) => void) | undefined
+
+  /** Bind the Host tool-sync listener so toggling `exposeAgentTool` applies immediately. */
+  setAgentToolListener(fn: (enabled: boolean) => void): void {
+    this.agentToolListener = fn
+  }
+
+  /** Persist `exposeAgentTool` and immediately mount/unmount `quota_refresh`. */
+  async setExposeAgentTool(enabled: boolean): Promise<void> {
+    await this.patch({ exposeAgentTool: enabled })
+    this.agentToolListener?.(enabled)
+  }
+
+  /** Build a secret-redacted structured diagnostic report (including skipped relay routes). */
+  diagnostics(lang: 'zh' | 'en' = 'zh'): DiagnosticReport {
+    const s = this.state()
+    const skippedRoutes: Array<{ id: string; reasonZh: string; reasonEn: string }> = []
+    for (const lp of this.getProviders()) {
+      const mapped = platformForProvider(lp.id)
+      if (!mapped || !lp.baseURL) continue
+      const adapter = [...DIRECT_ADAPTERS, ...CATALOG_EXTRA].find((a) => a.id === mapped)
+      if (!adapter?.origins?.length) continue
+      try {
+        const origin = new URL(lp.baseURL).origin
+        const overrideUrl = s.endpointOverrides?.[adapter.id]
+        const allowed = new Set(adapter.origins)
+        if (overrideUrl) {
+          try { allowed.add(new URL(overrideUrl).origin) } catch { /* ignore */ }
+        }
+        if (!allowed.has(origin)) {
+          skippedRoutes.push({
+            id: lp.id,
+            reasonZh: `baseURL (${origin}) 非官方域名，已按安全边界跳过官方余额接口（可在「自定义平台」一键接入）`,
+            reasonEn: `baseURL (${origin}) is a third-party gateway; skipped official balance endpoint by design (add under Custom Platforms)`,
+          })
+        }
+      } catch { /* ignore malformed baseURL */ }
+    }
+    return buildDiagnosticReport(s.providers, {
+      lang,
+      exposeAgentTool: s.exposeAgentTool === true,
+      skippedRoutes,
+    })
+  }
+
+  /** Untracked public-HTTPS DSH model providers eligible for 2-click custom card setup. */
+  untrackedCandidates(): CandidatePlatform[] {
+    const s = this.state()
+    return computeUntrackedCandidates(
+      this.getProviders(),
+      [...DIRECT_ADAPTERS, ...CATALOG_EXTRA],
+      s.httpPlatforms ?? [],
+      s.endpointOverrides ?? {},
+    )
+  }
+
+  /** Validate via `assertPublicHttpsUrl` and persist/clear a built-in adapter URL override. */
+  async setEndpointOverride(platformId: string, rawUrl: string): Promise<void> {
+    const id = platformId.trim()
+    const builtin = [...DIRECT_ADAPTERS, ...CATALOG_EXTRA].find((a) => a.id === id)
+    if (!builtin) throw new Error(`未知内置平台：${id}`)
+    const next = { ...(this.state().endpointOverrides ?? {}) }
+    const trimmed = rawUrl.trim()
+    if (!trimmed) {
+      Reflect.deleteProperty(next, id)
+    } else {
+      next[id] = assertPublicHttpsUrl(trimmed)
+    }
+    await this.patch({ endpointOverrides: next })
+    await this.refresh()
   }
 
   /** In-flight refresh, for the single-flight guard. */
@@ -589,6 +703,7 @@ export class QuotaController implements QuotaControllerFace {
       // DEEPSEEK_B_API_KEY），第二个账号才会单独成卡而不是整行消失。卡片标签
       // 追加供应商 id，同一平台并排两张卡才分得清谁是谁。
       const llmProviders = this.getProviders()
+      const endpointOverrides = this.state().endpointOverrides ?? {}
 
       // One ROW PER RESOLVED REF: two accounts on the same platform (e.g.
       // ZAI_CODING_CN_API_KEY + ZHIPU_API_KEY, or DEEPSEEK_API_KEY +
@@ -626,29 +741,34 @@ export class QuotaController implements QuotaControllerFace {
         }
         // `suffixRef` 也强制加后缀：账号卡在场时，key 卡必须自带 ref 才区分得开。
         const multi = keys.length > 1 || suffixRef
+        const endpointOverride = endpointOverrides[adapter.id]
         return Promise.all(keys.map(async (key): Promise<ProviderSnapshot> => {
           const id = multi ? `${adapter.id}#${key.ref}` : adapter.id
           const label = labelOf(adapter.label, key.ref)
+          const decorateCommunityError = (raw: string): string =>
+            adapter.verification === 'community' && !/^接口地址/.test(raw)
+              ? `${raw}（社区契约适配，若上游接口已变更欢迎提交脱敏响应修复）`
+              : raw
           const fail = (message: string): ProviderSnapshot => ({
             id,
             label,
             status: 'error',
-            message,
+            message: decorateCommunityError(message),
             via: 'api',
             keyRef: key.ref,
             keySource: key.source,
             items: [],
           })
           try {
-            const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+            const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS), { endpointOverride })
             return { ...snapshot, id, label: labelOf(snapshot.label, key.ref), keyRef: key.ref, keySource: key.source }
           } catch (error) {
-            // 网络抖动/限流/5xx 当场重试一次（鉴权错误重试无意义）。
+            // 网络抖动/限流/5xx 当场重试一次（鉴权错误与 SSRF 拦截重试无意义）。
             const message = error instanceof Error ? error.message : String(error)
-            if (!isTransientFailure(message)) return fail(message)
+            if (!isTransientFailure(message) || /^接口地址/.test(message)) return fail(message)
             await sleep(FETCH_RETRY_DELAY_MS)
             try {
-              const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+              const snapshot = await adapter.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS), { endpointOverride })
               return { ...snapshot, id, label: labelOf(snapshot.label, key.ref), keyRef: key.ref, keySource: key.source }
             } catch (retryError) {
               return fail(retryError instanceof Error ? retryError.message : String(retryError))
@@ -680,7 +800,7 @@ export class QuotaController implements QuotaControllerFace {
         ...DIRECT_ADAPTERS.filter(directVisible).map((a) => runDirect(
           a,
           false,
-          platformRefHints(a, llmProviders),
+          platformRefHints(a, llmProviders, endpointOverrides),
           // 账号卡在场时，DeepSeek 的 key 卡必须自报 ref，否则「DeepSeek」
           // 这张卡看不出是哪个账号的钱包。
           showDeepseekAccount && a.id === 'deepseek',
@@ -688,7 +808,7 @@ export class QuotaController implements QuotaControllerFace {
         // OpenDesign 是唯一「钉住」的目录平台：DSH 里配了 opendesign 供应商却
         // 没登录 vela 时，用户需要看到一句「要先登录 Open Design」，而不是
         // 卡片凭空消失（额度 key 只能由 vela 登录签发）。
-        ...CATALOG_EXTRA.filter(directVisible).map((a) => runDirect(a, a.id === 'opendesign', platformRefHints(a, llmProviders))),
+        ...CATALOG_EXTRA.filter(directVisible).map((a) => runDirect(a, a.id === 'opendesign', platformRefHints(a, llmProviders, endpointOverrides))),
         ...customHttp.map((a) => runDirect(a, true)),
       ]
 
@@ -858,7 +978,10 @@ export class QuotaController implements QuotaControllerFace {
           const insight = burnInsight(series, item, now)
           if (insight) {
             item.burnRatePerHour = insight.ratePerHour
-            item.etaMinutes = insight.etaMinutes
+            if (insight.etaMinutes !== undefined) item.etaMinutes = insight.etaMinutes
+            else delete item.etaMinutes
+            if (insight.depletesBeforeReset !== undefined) item.depletesBeforeReset = insight.depletesBeforeReset
+            else delete item.depletesBeforeReset
           }
         }
       }
@@ -886,11 +1009,16 @@ export class QuotaController implements QuotaControllerFace {
   }
 
   /** Platforms the panel's key manager covers: every direct (API-key) row. */
-  keyPlatforms(): Array<{ id: string; label: string }> {
+  keyPlatforms(): Array<{ id: string; label: string; verification?: VerificationTier; defaultEndpoint?: string }> {
     return [
-      ...this.allDirectAdapters().map((a) => ({ id: a.id, label: a.label })),
+      ...this.allDirectAdapters().map((a) => ({
+        id: a.id,
+        label: a.label,
+        ...(a.verification ? { verification: a.verification } : {}),
+        ...(a.defaultEndpoint ? { defaultEndpoint: a.defaultEndpoint } : {}),
+      })),
       // 火山方舟要一对 AK/SK（面板输入格式 AK:SK），不是单个 API key。
-      { id: ARK_PLATFORM_ID, label: `${ARK_LABEL} (AK/SK)` },
+      { id: ARK_PLATFORM_ID, label: `${ARK_LABEL} (AK/SK)`, verification: 'verified' as const },
     ]
   }
 
@@ -1056,7 +1184,8 @@ export class QuotaController implements QuotaControllerFace {
       const key = await resolveKey(this.getCredentials(), refs, refs)
       if (!key) return { ok: false, ms: 0, message: '未找到 API key（DSH 凭证与环境变量均无）' }
       try {
-        await direct.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS))
+        const endpointOverride = this.state().endpointOverrides?.[direct.id]
+        await direct.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS), { endpointOverride })
         return { ok: true, ms: Date.now() - started }
       } catch (error) {
         return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }

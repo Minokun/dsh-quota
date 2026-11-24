@@ -246,6 +246,7 @@ export const PANEL_CSS = `
 .dq-item-alert { flex: none; font-size: 10px; color: #e74c3c; cursor: help; }
 .dq-item-reset { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; }
 .dq-item-eta { width: 100%; font-size: 10px; color: var(--dsw-alias-label-tertiary, #777); text-align: right; margin-top: -3px; font-variant-numeric: tabular-nums; }
+.dq-item-pace { width: 100%; font-size: 10px; font-weight: 600; color: #f5a623; text-align: right; margin-top: -3px; cursor: help; }
 
 /* ── 卡片测速行（被动采样）─────────────────────────────────────────────────
    样式上刻意比额度条目更收敛：它是一行结论 + 一个主数字，不是另一张表。
@@ -306,6 +307,19 @@ export const PANEL_CSS = `
 select.dq-input { appearance: auto; cursor: pointer; }
 .dq-login-btn { align-self: flex-start; margin-top: 2px; }
 .dq-empty { font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary, #999); padding: 8px 4px; }
+.dq-diag-hint { font-size: 10px; line-height: 1.45; color: #f5a623; word-break: break-word; }
+.dq-diag-verdict { font-size: 11px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-primary, #eee); }
+.dq-diag-list { display: flex; flex-direction: column; gap: 4px; font-size: 10px; line-height: 1.45; color: var(--dsw-alias-label-secondary, #999); }
+.dq-diag-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-secondary, #999); cursor: pointer; user-select: none; }
+.dq-onboard {
+  border: 1px dashed var(--dsw-alias-border-l2, rgba(128,128,128,0.35)); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.06));
+}
+.dq-onboard-cand { display: flex; align-items: center; gap: 6px; font-size: 11px; flex-wrap: wrap; }
+.dq-onboard-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dq-verify-ok { color: #3ddc84; font-size: 10px; margin-left: 3px; cursor: help; }
+.dq-verify-comm { font-size: 9px; padding: 0 4px; border-radius: 4px; margin-left: 4px; background: rgba(245, 166, 35, 0.14); color: #f5a623; cursor: help; }
 
 /* Login-expiry reminder toast above the pill. */
 .dq-toast {
@@ -318,4 +332,31 @@ select.dq-input { appearance: auto; cursor: pointer; }
 .dq-toast-text { white-space: nowrap; }
 /* 用量告警（越阈值 / 预计耗尽）toast：琥珀色左边条与登录 toast 区分。 */
 .dq-toast--warn { border-left: 3px solid #f5a623; }
+
+/* ── Composer 下方常驻单行窄条（conversation.composer.dock）────────────── */
+.dq-dock {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 320px;
+  height: 20px; padding: 1px 8px; border-radius: 999px; box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.25));
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.08));
+  color: var(--dsw-alias-label-secondary, #888);
+  font-family: inherit; font-size: 11px; font-weight: 500; line-height: 18px;
+  font-variant-numeric: tabular-nums; cursor: pointer; user-select: none;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.dq-dock:hover, .dq-dock--open {
+  color: var(--dsw-alias-label-primary, #eee);
+  border-color: var(--dsw-alias-brand-primary, #5b6cff);
+}
+.dq-dock--busy { opacity: 0.72; }
+.dq-dock-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.dq-dock-primary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dq-dock-pace { flex: none; color: #f5a623; font-size: 10px; }
+.dq-dock-sep { flex: none; opacity: 0.55; }
+.dq-dock-cost { flex: none; color: var(--dsw-alias-label-primary, inherit); font-weight: 600; white-space: nowrap; }
+.dq-dock-alert {
+  flex: none; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #e74c3c; color: #fff; font-size: 9px; font-weight: 700; line-height: 1;
+}
 `

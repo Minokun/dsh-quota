@@ -1,6 +1,21 @@
+**简体中文** | [English](./README.en.md)
+
 # dsh-quota
 
-DeepSeek Harness 插件：右下角「会员额度」悬浮球 + 面板，一眼看清各 AI 平台的套餐额度与余额。
+DeepSeek Harness 插件：输入框底栏常驻窄条 + 右下角「会员额度」悬浮球/悬浮环 + 多平台面板，一眼看清各 AI 平台的套餐额度、重置配速风险与会话/今日真实账单。
+
+## 为什么选择 dsh-quota（能力与安全边界对比）
+
+| 核心维度 | `dsh-quota` | 纯本地计费账本类插件 | 纯 HTTP 模板配置类插件 |
+|---|---|---|---|
+| **官方接口直查真实余量**（DeepSeek、Kimi Code、智谱、火山方舟、OpenRouter、xAI、OpenAI/Anthropic Admin 等 55+ 平台） | 支持（支持同平台多账号独立成卡） | 不支持（仅靠本地 token 乘单价） | 部分支持（需手填 JSON 路径） |
+| **无公开 API 平台的 MCP 兜底**（BigModel 控制台、千问百炼、超算、TokenRouter、SupaWriter + 自定义 `mcp__*`） | 支持（含一键打开浏览器续期登录态） | 不支持 | 不支持 |
+| **本机 Magpie 网关自动协同与去重**（Codex / Claude / Grok / Gemini 窗口配额 + 本地订阅去重） | 支持 | 不支持 | 不支持 |
+| **最紧窗口优先 + 重置前撞墙配速雷达**（`etaMinutes` 对比 `resetAt`，消除重置前假警报、预警周额度超速） | 支持 | 不支持 | 极少支持 |
+| **按事件时刻计价的会话 & 今日三层账本**（切模型不篡改历史、DeepSeek 峰谷半价与节假日、自适应 `¥ / $`、Fork 去重） | 支持 | 支持 | 不支持 |
+| **双形态无裁剪入口**（`conversation.composer.dock` 底栏窄条 + 可拖拽浮球/环，默认 `both`，支持 `dock-only / floater-only`） | 支持 | 单一入口 | 单一入口（部分受侧栏裁剪） |
+| **纵深安全防线**（凭证走 DSH 原生域零明文落盘、`assertPublicHttpsUrl` 禁内网 SSRF、禁 302 重定向、CSRF 请求头） | 完整内置 | 不涉及网络 | 常缺重定向与内网 IP 拦截 |
+| **日常零上下文 Token 损耗**（`exposeAgentTool` 默认 `false`，不往每轮 LLM 请求塞工具 Schema） | 默认零损耗（按需一键开启） | 视实现而定 | 视实现而定 |
 
 ![面板特写](https://raw.githubusercontent.com/Minokun/dsh-quota/main/docs/screenshot-panel.png)
 
@@ -96,8 +111,10 @@ dsh plugin --profile web add dsh-quota
 - id: quota
   config:
     refreshOnBoot: true          # 启动后自动刷新一次（默认 true）
-    refreshIntervalMinutes: 30   # 定时刷新间隔，0 关闭（默认 0）
+    refreshIntervalMinutes: 5    # 定时刷新间隔（分钟），0 关闭（默认 5）
     alertPercent: 85             # 用量占比告警阈值（红点计数，默认 85）
+    exposeAgentTool: false       # 是否向 Agent 暴露 quota_refresh 工具（默认 false 省上下文；定时任务按需开启）
+    endpointOverrides: {}        # 内置平台域名迁移时的 HTTPS 地址覆盖（仍强制执行防内网 SSRF 与禁重定向校验）
 ```
 
 ### 接入你自己的 MCP 平台

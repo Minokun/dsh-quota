@@ -1,7 +1,8 @@
 {
   "name": "dsh-quota",
   "version": "0.14.11",
-  "description": "DeepSeek Harness plugin: a bottom-right membership-quota pill with a panel showing each AI platform's plan quota. Queries Kimi / DeepSeek / Zhipu directly via official APIs with API keys from the DSH credentials domain, and falls back to registered MCP tools for Qianwen / Scnet / TokenRouter / SupaWriter.",
+  "icon": "./icon.svg",
+  "description": "DeepSeek Harness plugin: multi-platform plan quota, API balance, burn-rate pacing radar, composer dock bar, and adaptive session/daily spend ledger via DSH credentials and MCP.",
   "license": "MIT",
   "author": "Minokun",
   "repository": {
@@ -22,6 +23,8 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -37,7 +40,11 @@
   "files": [
     "lib",
     "cordis.patch.yml",
-    "README.md"
+    "icon.svg",
+    "locale/*.json",
+    "README.md",
+    "README.en.md",
+    "docs/extending.md"
   ],
   "scripts": {
     "build": "tsdown && node scripts/check-client-id.mjs",
@@ -59,9 +66,19 @@
     "dsh-plugin",
     "deepseek-harness",
     "quota",
+    "usage",
+    "billing",
+    "cost",
+    "coding-plan",
     "kimi",
     "deepseek",
-    "bigmodel"
+    "bigmodel",
+    "zhipu",
+    "openrouter",
+    "claude",
+    "codex",
+    "magpie",
+    "token-monitor"
   ],
   "packageManager": "pnpm@11.7.0+sha512.19cc852c120c7125760f2443ee6be0ca5b40f9f50598de1a09a1f177503e010e57c23c77646e01e761de59bf874fb22a3398c33ab9691fc13eb946b6f0f4d620"
 }

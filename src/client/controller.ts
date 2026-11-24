@@ -11,6 +11,8 @@ import { alertIdentities, retainedUsageAckKeys } from './alerts.ts'
 import { browserLang, translate, type Lang } from './locale.ts'
 import { trendValues } from './sparkline.ts'
 import { createUsageAlertState, deserializeUsageAlertState, evaluateUsageAlerts, serializeUsageAlertState, type UsageAlert, type UsageAlertState } from './usage-alerts.ts'
+import { formatProviderSummary } from '../window-rank.ts'
+import { nextDisplayMode, parseDisplayMode, type EntryDisplayMode } from './dock-logic.ts'
 
 /** One item row as rendered by the panel. */
 export interface PanelItem {
@@ -25,6 +27,8 @@ export interface PanelItem {
   burnRatePerHour?: number
   /** 按当前速率预估的耗尽时间（分钟）。 */
   etaMinutes?: number
+  /** 按当前配速是否会在窗口重置前耗尽（true = 超速撞墙预警）。 */
+  depletesBeforeReset?: boolean
   /** 余额型条目：近 7 天实测消耗（日历日均 ×7；不足 7 天按已观测跨度折算，与余额同币种）。 */
   weeklySpent?: number
   /** 余额型条目：weeklySpent 用到的实测跨度（毫秒）。 */
@@ -99,37 +103,21 @@ export interface ModelDirectoriesLike {
 /** Map a model-provider id onto a quota platform id (mirror of the host side). */
 export { platformForProvider } from './platform-map.ts'
 
-/** Compact window tag for the pill: "5 小时窗口"→5h, "周额度"→周/wk, "300m 窗口"→300m. */
-function shortTag(label: string, lang: Lang): string {
-  if (/5\s*小时/.test(label)) return '5h'
-  const m = label.match(/(\d+)\s*m\b/)
-  if (m) return `${m[1]}m`
-  if (/本周|周/.test(label)) return translate(lang, 'tag.weekly')
-  if (/月/.test(label)) return translate(lang, 'tag.monthly')
-  return ''
-}
-
 /** One-line quota summary: up to two headline windows joined by " · ". */
 export function summarizeItems(provider: PanelProvider | undefined, lang: Lang = 'zh'): string {
-  if (!provider || provider.status !== 'ok') return ''
-  const head = (item: PanelItem): string | undefined => {
-    const value = item.percent !== undefined
-      ? translate(lang, 'summary.remainingPercent', { p: Math.max(0, Math.round(100 - item.percent)) })
-      : item.display ?? (item.remaining !== undefined ? translate(lang, 'summary.remainingCount', { n: item.remaining }) : undefined)
-    if (value === undefined) return undefined
-    const tag = shortTag(item.label, lang)
-    return tag ? `${tag} ${value}` : value
-  }
-  const headlines = provider.items.filter((i) => /窗口|周|余额|额度|金额|消耗/.test(i.label))
-  const parts = (headlines.length > 0 ? headlines : provider.items)
-    .map(head)
-    .filter((v): v is string => Boolean(v))
-    .slice(0, 2)
-  return parts.join(' · ')
+  return formatProviderSummary(provider, {
+    weeklyTag: translate(lang, 'tag.weekly'),
+    monthlyTag: translate(lang, 'tag.monthly'),
+    remainingPercent: (p) => translate(lang, 'summary.remainingPercent', { p }),
+    remainingCount: (n) => translate(lang, 'summary.remainingCount', { n }),
+  })
 }
 
 /** What the panel renders. */
 import type { ModelSpeedSummary } from '../speed-sampler.ts'
+import type { LedgerWireSnapshot } from '../session-ledger.ts'
+import type { CandidatePlatform } from '../onboarding.ts'
+import type { VerificationTier } from '../direct.ts'
 
 export interface QuotaPanelState {
   /** False until the first status read lands. */
@@ -147,6 +135,8 @@ export interface QuotaPanelState {
    * 负责；旧版 Host 不返回该字段时按空数组处理（卡片不显示测速行）。
    */
   speed?: ModelSpeedSummary[]
+  /** Host 侧按时刻计价的会话账本与今日三层汇总快照。 */
+  ledger?: LedgerWireSnapshot
   keys: PanelKeyState
   /** Local form error. */
   formError: string
@@ -175,7 +165,11 @@ export interface QuotaPanelState {
   /** 已点过「去登录」、等待用户确认的平台 id。 */
   loginPending: string
   /** Key 管理覆盖的直连平台（host 下发）。 */
-  keyPlatforms: Array<{ id: string; label: string }>
+  keyPlatforms: Array<{ id: string; label: string; verification?: VerificationTier; defaultEndpoint?: string }>
+  /** 未纳管的 DSH 公网 HTTPS 模型供应商路由候选（供零配置一键预填）。 */
+  candidates: CandidatePlatform[]
+  /** 用户在本地点击「忽略」过的候选 id 集合。 */
+  ignoredCandidates: string[]
   /** DSH 模型供应商 id → apiKeyEnv（host 下发，pill 精确对应卡片）。 */
   providerKeyRefs: Record<string, string>
   /** 用户拖拽保存的面板卡片顺序（卡片 id 序列，见 panel-order.ts；空 = 跟随 DSH 模型顺序）。 */
@@ -194,6 +188,16 @@ export interface QuotaPanelState {
   probing: string
   /** 平台 id → 最近一次测活结果（延迟/错误）。 */
   probeResults: Record<string, { ok: boolean; ms: number; message?: string }>
+  /** 是否向 Agent 暴露 `quota_refresh` 工具（默认 false）。 */
+  exposeAgentTool: boolean
+  /** 自检与设置抽屉是否展开。 */
+  showDiag: boolean
+  /** 最近一次复制脱敏报告的成功反馈标记。 */
+  diagCopied: boolean
+  /** 入口显示模式：both（默认）| dock-only | floater-only。 */
+  displayMode: EntryDisplayMode
+  /** 当前屏幕上已挂载的 composer.dock 窄条实例数（用于非会话页自动兜底浮球）。 */
+  dockMountCount: number
   /** 面板文案语言（跟随 DSH locale 服务，服务缺失时按浏览器语言）。 */
   lang: Lang
 }
@@ -231,6 +235,20 @@ export interface QuotaPanelFace {
   setProviderOrder(order: string[]): void
   /** 把当前红点告警全部标为已读（条件不变就不再计数，窗口重置后自动恢复）。 */
   ackAlerts(): void
+  /** 展开/收起自检与设置折叠区。 */
+  toggleDiag(): void
+  /** 切换是否向 Agent 暴露 `quota_refresh` 工具。 */
+  setExposeAgentTool(enabled: boolean): void
+  /** 拉取并复制脱敏自检报告到剪贴板。 */
+  copyDiagnostics(): void
+  /** 循环切换入口展示位置（both → dock-only → floater-only）。 */
+  cycleDisplayMode(): void
+  /** 注册一个已挂载的 composer.dock 窄条实例，返回卸载清理函数。 */
+  mountDock(): () => void
+  /** 将检测到的 DSH 供应商路由一键预填到自定义平台草稿并展开保存区。 */
+  prefillCandidate(candidate: CandidatePlatform): void
+  /** 忽略某个候选路由（持久化在 localStorage）。 */
+  ignoreCandidate(id: string): void
 }
 
 /** Initial snapshot before the first status read. */
@@ -255,6 +273,8 @@ const INITIAL: QuotaPanelState = {
   loginFlows: {},
   loginPending: '',
   keyPlatforms: [],
+  candidates: [],
+  ignoredCandidates: loadIgnoredCandidates(),
   providerKeyRefs: {},
   providerOrder: [],
   catalogGroups: [],
@@ -265,6 +285,11 @@ const INITIAL: QuotaPanelState = {
   ackedAlerts: loadAlertAcks(),
   probing: '',
   probeResults: {},
+  exposeAgentTool: false,
+  showDiag: false,
+  diagCopied: false,
+  displayMode: loadDisplayMode(),
+  dockMountCount: 0,
   lang: browserLang(),
 }
 
@@ -399,13 +424,46 @@ export class QuotaPanelController {
       probe: (platform) => { void this.probe(platform) },
       setProviderOrder: (order) => { void this.setProviderOrder(order) },
       ackAlerts: () => { this.ackAlerts() },
+      toggleDiag: () => this.patch({ showDiag: !this.store.getSnapshot().showDiag }),
+      setExposeAgentTool: (enabled) => { void this.setExposeAgentTool(enabled) },
+      copyDiagnostics: () => { void this.copyDiagnostics() },
+      cycleDisplayMode: () => {
+        const next = nextDisplayMode(this.store.getSnapshot().displayMode)
+        saveDisplayMode(next)
+        this.patch({ displayMode: next })
+      },
+      mountDock: () => {
+        this.patch({ dockMountCount: this.store.getSnapshot().dockMountCount + 1 })
+        return () => {
+          this.patch({ dockMountCount: Math.max(0, this.store.getSnapshot().dockMountCount - 1) })
+        }
+      },
+      prefillCandidate: (candidate) => {
+        const snap = this.store.getSnapshot()
+        this.patch({
+          showCustom: true,
+          formError: '',
+          customDraft: {
+            ...snap.customDraft,
+            label: candidate.label,
+            endpoint: candidate.suggestedEndpoint,
+            keyRef: candidate.keyRef,
+            format: snap.customDraft.format || 'openai-billing',
+          },
+        })
+      },
+      ignoreCandidate: (id) => {
+        const next = [...new Set([...this.store.getSnapshot().ignoredCandidates, id])]
+        saveIgnoredCandidates(next)
+        this.patch({ ignoredCandidates: next })
+      },
     }
   }
 
   /** Read the snapshot (initial load, opening the panel). */
   private async reload(): Promise<void> {
     try {
-      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string }>; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; history?: Record<string, unknown>; speed?: ModelSpeedSummary[] }>('/status', undefined, this.lang())
+      const state = await request<{ refreshedAt: string; providers: PanelProvider[]; keys: PanelKeyState; httpPlatforms?: CustomPlatform[]; formats?: string[]; currentModel?: QuotaPanelState['currentModel']; loginFlows?: Record<string, string>; keyPlatforms?: Array<{ id: string; label: string; verification?: VerificationTier; defaultEndpoint?: string }>; candidates?: CandidatePlatform[]; providerKeyRefs?: Record<string, string>; providerOrder?: string[]; alertPercent?: number; exposeAgentTool?: boolean; history?: Record<string, unknown>; speed?: ModelSpeedSummary[]; ledger?: LedgerWireSnapshot }>('/status', undefined, this.lang())
       // /status 本就携带 history（host 时序采样），这里裁成每条目最近 30 个
       // 采样值存入 trends，供面板条目的 sparkline 使用。
       const trends: Record<string, number[]> = {}
@@ -423,12 +481,15 @@ export class QuotaPanelController {
         formats: state.formats ?? [],
         loginFlows: state.loginFlows ?? {},
         keyPlatforms: state.keyPlatforms ?? [],
+        candidates: state.candidates ?? [],
         providerKeyRefs: state.providerKeyRefs ?? {},
         providerOrder: state.providerOrder ?? [],
         alertPercent: state.alertPercent ?? 85,
+        exposeAgentTool: state.exposeAgentTool === true,
         trends,
         // 被动测速：旧版 Host 不返回该字段 → 空数组，卡片不显示测速行。
         speed: state.speed ?? [],
+        ...(state.ledger ? { ledger: state.ledger } : {}),
         ...(state.currentModel ? { currentModel: state.currentModel } : {}),
       })
       this.updateLoginAlerts(state.providers, state.loginFlows ?? {})
@@ -661,6 +722,34 @@ export class QuotaPanelController {
     })
   }
 
+  /** Toggle `exposeAgentTool` via CSRF-protected `/settings`. */
+  private async setExposeAgentTool(enabled: boolean): Promise<void> {
+    const prev = this.store.getSnapshot().exposeAgentTool
+    this.patch({ exposeAgentTool: enabled, formError: '' })
+    try {
+      const res = await request<{ exposeAgentTool?: boolean }>('/settings', { exposeAgentTool: enabled }, this.lang())
+      this.patch({ exposeAgentTool: res.exposeAgentTool === true })
+    } catch (error) {
+      this.patch({ exposeAgentTool: prev, formError: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** Fetch `/diag` (with fallback to local report) and copy redacted Markdown to clipboard. */
+  private async copyDiagnostics(): Promise<void> {
+    try {
+      const lang = this.lang()
+      const res = await request<{ markdown?: string }>(`/diag?lang=${lang}`, undefined, lang)
+      const text = res.markdown ?? ''
+      if (text && typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      }
+      this.patch({ diagCopied: true })
+      setTimeout(() => { this.patch({ diagCopied: false }) }, 2000)
+    } catch (error) {
+      this.patch({ formError: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   /** Run one refresh round trip with the busy flag bracketing it. */
   private async roundTrip(operation: () => Promise<void>): Promise<void> {
     this.patch({ busy: true, formError: '' })
@@ -714,6 +803,41 @@ async function request<T>(path: string, body: Record<string, unknown> | undefine
 const USAGE_ALERT_STORE_KEY = 'dsh-quota:usage-alerts'
 /** localStorage key for the acked (read) alerts — the red badge stays quiet. */
 const ALERT_ACK_STORE_KEY = 'dsh-quota:alert-acks'
+/** localStorage key for entry placement (both | dock-only | floater-only). */
+const DISPLAY_MODE_STORE_KEY = 'dsh-quota:display-mode'
+
+function loadDisplayMode(): EntryDisplayMode {
+  try {
+    return parseDisplayMode(window.localStorage.getItem(DISPLAY_MODE_STORE_KEY))
+  } catch {
+    return 'both'
+  }
+}
+
+function saveDisplayMode(mode: EntryDisplayMode): void {
+  try {
+    window.localStorage.setItem(DISPLAY_MODE_STORE_KEY, mode)
+  } catch { /* private mode */ }
+}
+
+const IGNORED_CANDIDATES_STORE_KEY = 'dsh-quota:ignored-candidates'
+
+function loadIgnoredCandidates(): string[] {
+  try {
+    const raw = window.localStorage.getItem(IGNORED_CANDIDATES_STORE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function saveIgnoredCandidates(ids: string[]): void {
+  try {
+    window.localStorage.setItem(IGNORED_CANDIDATES_STORE_KEY, JSON.stringify(ids.slice(0, 100)))
+  } catch { /* private mode */ }
+}
 /** 用量提醒 toast 的自动收起时长：条件仍满足也收起（不会重弹，窗口内只提醒一次）。 */
 const ALERT_VISIBLE_MS = 10 * 60 * 1000
 

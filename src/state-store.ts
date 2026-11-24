@@ -19,7 +19,7 @@ export interface QuotaStateStore {
 }
 
 /** Config fields the panel edits at runtime that must survive a restart. */
-export const PERSISTED_KEYS = new Set<keyof Config>(['httpPlatforms', 'providerOrder'])
+export const PERSISTED_KEYS = new Set<keyof Config>(['httpPlatforms', 'providerOrder', 'exposeAgentTool', 'endpointOverrides'])
 
 /** Structural face of the new (dsh ≥ 0.1.6) settings service. */
 export interface SettingsFormsLike {

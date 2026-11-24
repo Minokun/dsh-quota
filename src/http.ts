@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { QuotaControllerFace } from './controller.ts'
 import { CUSTOM_FORMATS } from './direct.ts'
+import { buildDiagnosticReport } from './diagnostics.ts'
 
 const API_PREFIX = '/plugins/dsh-quota/api'
 const CSRF_HEADER = 'x-dsh-quota'
@@ -33,7 +34,22 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
   const method = req.method ?? 'GET'
   try {
     if (method === 'GET' && path === '/status') {
-      return send(res, 200, { ...quota.state(), keys: await quota.keyStatus(), formats: CUSTOM_FORMATS, loginFlows: quota.loginUrls(), keyPlatforms: quota.keyPlatforms(), speed: quota.speed() })
+      return send(res, 200, {
+        ...quota.state(),
+        keys: await quota.keyStatus(),
+        formats: CUSTOM_FORMATS,
+        loginFlows: quota.loginUrls(),
+        keyPlatforms: quota.keyPlatforms(),
+        speed: quota.speed(),
+        ...(quota.ledger ? { ledger: quota.ledger() } : {}),
+        ...(quota.untrackedCandidates ? { candidates: quota.untrackedCandidates() } : {}),
+      })
+    }
+    if (method === 'GET' && path === '/diag') {
+      const urlObj = new URL(req.url ?? '/', 'http://x')
+      const lang = urlObj.searchParams.get('lang') === 'en' ? 'en' : 'zh'
+      const report = quota.diagnostics ? quota.diagnostics(lang) : buildDiagnosticReport(quota.state().providers, { lang, exposeAgentTool: quota.state().exposeAgentTool })
+      return send(res, 200, report)
     }
     if (method === 'POST') {
       if (req.headers[CSRF_HEADER] === undefined) return send(res, 403, { error: 'missing required custom header' })
@@ -99,6 +115,21 @@ async function route(req: IncomingMessage, res: ServerResponse, quota: QuotaCont
         const body = await readJson(req)
         await quota.setProviderOrder(stringArrayField(body, 'order'))
         return send(res, 200, { ok: true, providerOrder: quota.state().providerOrder })
+      }
+      if (path === '/settings') {
+        const body = await readJson(req)
+        if (typeof body.exposeAgentTool === 'boolean' && quota.setExposeAgentTool) {
+          await quota.setExposeAgentTool(body.exposeAgentTool)
+        }
+        const overridePlatform = stringField(body, 'overridePlatform')
+        if (overridePlatform && typeof body.overrideUrl === 'string' && quota.setEndpointOverride) {
+          await quota.setEndpointOverride(overridePlatform, body.overrideUrl)
+        }
+        return send(res, 200, {
+          ok: true,
+          exposeAgentTool: quota.state().exposeAgentTool,
+          endpointOverrides: quota.state().endpointOverrides,
+        })
       }
     }
     send(res, 404, { error: 'unknown route' })

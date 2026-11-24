@@ -17,7 +17,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 // this import the augmentation never reaches the program and `props.useSessions`
 // silently degrades to `any` — how the `current` regression shipped.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { QuotaPanel } from './QuotaPanel.tsx'
+import { QuotaDockBar } from './QuotaDockBar.tsx'
 import { QuotaPanelController, type ModelDirectoriesLike } from './controller.ts'
 import { PANEL_CSS, STYLE_TAG_ID } from './styles.ts'
 
@@ -65,6 +67,17 @@ export function apply(ctx: ClientContext): void {
     id: 'dsh-quota',
     inject: () => controller.inject(),
   }, QuotaPanel))
+
+  try {
+    ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+      name: 'conversation.composer.dock',
+      id: 'dsh-quota-dock',
+      order: 50,
+      inject: () => controller.inject(),
+    }, QuotaDockBar))
+  } catch {
+    // Graceful degradation on legacy DSH builds without conversation.composer.dock.
+  }
 }
 
 /** Inject the panel stylesheet; the returned cleanup removes it on unload. */

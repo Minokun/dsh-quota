@@ -20,11 +20,20 @@ import { ALL_DIRECT_REFS } from './direct.ts'
 import { ARK_REFS } from './ark.ts'
 import { configuredMcpServers } from './dsh-config.ts'
 import { createStateStore, type LegacyScopeLike, type SettingsFormsLike } from './state-store.ts'
-import { registerTools } from './tools.ts'
+import { createAgentToolSync } from './tools.ts'
 import { registerHttpRoutes } from './http.ts'
 import { PassiveSpeedSampler } from './speed-sampler-host.ts'
 import { toModelSpeedSummary } from './speed-sampler.ts'
 import { loadSpeedFile, saveSpeedFile, speedFilePath } from './speed-store.ts'
+import { PassiveSessionLedgerHost } from './session-ledger-host.ts'
+import {
+  dailyRollupFilePath,
+  loadDailyRollupFile,
+  loadSessionLedgerFile,
+  saveDailyRollupFile,
+  saveSessionLedgerFile,
+  sessionLedgerFilePath,
+} from './session-ledger-store.ts'
 
 export { Config }
 
@@ -211,7 +220,60 @@ export function apply(ctx: Context, config: Config): void {
     sampler.acc.hydrate(saved)
   }).catch(() => undefined)
 
-  registerTools(ctx, quota)
+  // ── 会话按时刻计价账本 + 今日三层汇总（防 Fork 重复计费）─────────────────
+  let ledgerSaveTimer: ReturnType<typeof setTimeout> | undefined
+  const ledgerPath = sessionLedgerFilePath()
+  const rollupPath = dailyRollupFilePath()
+  const persistLedger = async (): Promise<void> => {
+    try {
+      const exported = ledgerHost.ledger.exportState()
+      await Promise.all([
+        saveSessionLedgerFile(ledgerPath, exported.sessions),
+        saveDailyRollupFile(rollupPath, exported.daily),
+      ])
+    } catch (error) {
+      ctx.logger.warn(`quota: session ledger not saved: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const ledgerHost = new PassiveSessionLedgerHost({
+    getDefaultRoute: () => {
+      const cur = quota.state().currentModel
+      return cur.provider || cur.model ? { provider: cur.provider, model: cur.model } : undefined
+    },
+    onDirty: () => {
+      if (ledgerSaveTimer !== undefined) return
+      ledgerSaveTimer = setTimeout(() => {
+        ledgerSaveTimer = undefined
+        void persistLedger()
+      }, SPEED_SAVE_THROTTLE_MS)
+      ledgerSaveTimer.unref?.()
+    },
+  })
+  quota.setLedgerSource(() => ledgerHost.ledger.snapshot())
+  ledgerHost.install(ctx)
+  void Promise.all([loadSessionLedgerFile(ledgerPath), loadDailyRollupFile(rollupPath)])
+    .then(([sessions, daily]) => {
+      ledgerHost.ledger.hydrate({ sessions, daily })
+    })
+    .catch(() => undefined)
+  ctx.effect(() => () => {
+    if (ledgerSaveTimer !== undefined) {
+      clearTimeout(ledgerSaveTimer)
+      ledgerSaveTimer = undefined
+      void persistLedger()
+    }
+  })
+
+  // 默认不向 Agent 注册 quota_refresh（零上下文 token 损耗）；仅当 exposeAgentTool
+  // 开启时动态挂载，支持面板/配置实时切换而无需重启 DSH。
+  const toolSync = createAgentToolSync(ctx, quota)
+  quota.setAgentToolListener((enabled) => {
+    toolSync.sync(enabled)
+  })
+  ctx.effect(() => {
+    toolSync.sync(quota.state().exposeAgentTool === true)
+    return () => { toolSync.dispose() }
+  }, 'dsh-quota: agent tool sync')
 
   ctx.inject(['settings'], (sctx) => {
     const svc = sctx.settings as unknown as SettingsFormsLike & LegacySettingsLike
@@ -224,6 +286,7 @@ export function apply(ctx: Context, config: Config): void {
     } catch (error) {
       ctx.logger.warn(`quota: legacy settings namespace unavailable, runtime state stays in memory: ${error instanceof Error ? error.message : String(error)}`)
     }
+    toolSync.sync(quota.state().exposeAgentTool === true)
   })
 
   // Boot refresh after MCP servers have had a chance to connect and sync

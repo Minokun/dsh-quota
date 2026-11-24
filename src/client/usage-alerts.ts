@@ -60,7 +60,15 @@ export interface UsageAlertProvider {
   id: string
   label: string
   status: string
-  items: Array<{ label: string; percent?: number; etaMinutes?: number; resetAt?: string }>
+  items: Array<{ label: string; percent?: number; etaMinutes?: number; resetAt?: string; depletesBeforeReset?: boolean }>
+}
+
+/** True when a valid future `resetAt` arrives before or at `etaMinutes`, making depletion alerts moot. */
+export function willResetBeforeEta(etaMinutes: number, resetAt: string | undefined, now: number): boolean {
+  if (!resetAt) return false
+  const resetMs = Date.parse(resetAt)
+  if (!Number.isFinite(resetMs) || resetMs <= now) return false
+  return etaMinutes * 60000 >= resetMs - now
 }
 
 /** eta 提醒的触发线：按当前速率预计在此分钟数内耗尽就提醒。 */
@@ -156,6 +164,7 @@ export function evaluateUsageAlerts(
   providers: UsageAlertProvider[],
   alertPercent: number,
   state: UsageAlertState,
+  now: number = Date.now(),
 ): { alerts: UsageAlert[]; state: UsageAlertState } {
   const lastPercent = new Map(state.lastPercent)
   const shown = new Map(state.shown)
@@ -186,10 +195,10 @@ export function evaluateUsageAlerts(
         }
         lastPercent.set(key, pct)
       }
-      if (item.etaMinutes !== undefined) {
+      if (item.etaMinutes !== undefined && item.depletesBeforeReset !== false && !willResetBeforeEta(item.etaMinutes, item.resetAt, now)) {
         const etaHeld = reminderHolds(firedEta.has(key) ? firedEta.get(key) : undefined, windowId)
         if (item.etaMinutes <= ETA_ALERT_MINUTES && !etaHeld) {
-          // 预计 30 分钟内耗尽：每个窗口只提醒一次。
+          // 预计 30 分钟内耗尽（且窗口重置晚于耗尽）：每个窗口只提醒一次。
           alerts.push({ key, kind: 'eta', providerId: p.id, providerLabel: p.label, itemLabel: item.label, etaMinutes: item.etaMinutes })
           firedEta.set(key, windowId)
         } else if (etaHeld && firedEta.get(key) !== windowId) {

@@ -1,5 +1,9 @@
 /**
  * Agent-facing tool: refresh the multi-platform quota snapshot.
+ *
+ * Opt-in since v0.15 (`exposeAgentTool: false` by default) so everyday coding
+ * turns pay zero tool-schema context tokens unless the user explicitly enables
+ * Agent access (e.g. for scheduled quota checks).
  * @module dsh-quota/tools
  */
 
@@ -8,10 +12,11 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { QuotaControllerFace } from './controller.ts'
 import { jsonSafe } from './json-safe.ts'
 
-export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
-  ctx.tools.register(defineTool({
+/** Register `quota_refresh` once and return its disposer. */
+export function registerTools(ctx: Context, quota: QuotaControllerFace): () => void {
+  const dispose = ctx.tools.register(defineTool({
     name: 'quota_refresh',
-    description: '刷新并返回所有已配置 AI 平台的额度快照（Kimi Code / DeepSeek / 智谱 Z.AI 通过官方 API 直查，API key 自动取自 DSH 凭证域；智谱 BigModel / 通义千问 / 超算 / TokenRouter / SupaWriter 通过已注册的 MCP 查询）。无参数。',
+    description: '刷新并返回已配置 AI 平台的额度快照（直连官方 API + 已注册 MCP 查询）。无参数。',
     parameters: {},
     output: {
       schema: {
@@ -42,6 +47,7 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
                       display: { type: 'string' },
                       burnRatePerHour: { type: 'number' },
                       etaMinutes: { type: 'number' },
+                      depletesBeforeReset: { type: 'boolean' },
                       weeklySpent: { type: 'number' },
                       spendWindowMs: { type: 'number' },
                     },
@@ -56,7 +62,25 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
         additionalProperties: false,
       },
       render: (_args, value) => {
-        const v = value as { refreshedAt: string; providers: Array<{ label: string; status: string; message?: string; items: Array<{ label: string; percent?: number; remaining?: number; display?: string; burnRatePerHour?: number; etaMinutes?: number; weeklySpent?: number; spendWindowMs?: number }> }> }
+        const v = value as {
+          refreshedAt: string
+          providers: Array<{
+            label: string
+            status: string
+            message?: string
+            items: Array<{
+              label: string
+              percent?: number
+              remaining?: number
+              display?: string
+              burnRatePerHour?: number
+              etaMinutes?: number
+              depletesBeforeReset?: boolean
+              weeklySpent?: number
+              spendWindowMs?: number
+            }>
+          }>
+        }
         const etaText = (minutes: number): string => {
           if (minutes < 60) return `约 ${String(minutes)} 分钟后耗尽`
           if (minutes < 60 * 24) return `约 ${(minutes / 60).toFixed(1)} 小时后耗尽`
@@ -74,7 +98,8 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
               const days = i.spendWindowMs === undefined ? 7 : Math.max(1, Math.round(i.spendWindowMs / 86400000))
               parts.push(days >= 7 ? `近 7 天≈${i.weeklySpent}` : `近 7 天≈${i.weeklySpent}（按 ${days} 天实测折算）`)
             }
-            if (i.etaMinutes !== undefined) parts.push(etaText(i.etaMinutes))
+            if (i.etaMinutes !== undefined && i.depletesBeforeReset !== false) parts.push(etaText(i.etaMinutes))
+            if (i.depletesBeforeReset === true) parts.push('⚠按当前配速将在重置前耗尽')
             return `  - ${parts.join(' | ')}`
           })
           return [head, ...rows].join('\n')
@@ -97,4 +122,33 @@ export function registerTools(ctx: Context, quota: QuotaControllerFace): void {
       })
     },
   }))
+  return typeof dispose === 'function' ? dispose : () => undefined
+}
+
+/**
+ * Synchronize `quota_refresh` tool registration with `exposeAgentTool`.
+ * Does NOT call `ctx.tools.register` while disabled; dynamically registers or
+ * disposes on runtime toggle without restarting DSH.
+ */
+export function createAgentToolSync(ctx: Context, quota: QuotaControllerFace): { sync(enabled: boolean): void; dispose(): void } {
+  let currentDispose: (() => void) | undefined
+  const sync = (enabled: boolean): void => {
+    if (enabled && currentDispose === undefined) {
+      currentDispose = registerTools(ctx, quota)
+    } else if (!enabled && currentDispose !== undefined) {
+      const off = currentDispose
+      currentDispose = undefined
+      off()
+    }
+  }
+  return {
+    sync,
+    dispose: () => {
+      if (currentDispose !== undefined) {
+        const off = currentDispose
+        currentDispose = undefined
+        off()
+      }
+    },
+  }
 }

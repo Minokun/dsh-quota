@@ -24,6 +24,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { CustomHttpPlatform, ProviderSnapshot, QuotaItem } from './config.ts'
 
+export type VerificationTier = 'verified' | 'community'
+
 /** One direct platform adapter. */
 export interface DirectAdapter {
   id: string
@@ -32,6 +34,10 @@ export interface DirectAdapter {
   keyRefs: string[]
   /** Environment variables tried as fallback. */
   envKeys: string[]
+  /** Verification tier: real-account fixture verified vs community/doc contract. */
+  verification?: VerificationTier
+  /** Default upstream endpoint URL (overridable via `Config.endpointOverrides`). */
+  defaultEndpoint?: string
   /**
    * Official endpoint origin(s). A custom DSH model provider that maps onto
    * this platform contributes its own credential ref as an extra account card
@@ -47,8 +53,8 @@ export interface DirectAdapter {
    * key is not an admin key and would only produce a 401 card.
    */
   extraRefsFromProviders?: boolean
-  /** Fetch the snapshot with the resolved key. */
-  fetch(key: string, signal?: AbortSignal): Promise<ProviderSnapshot>
+  /** Fetch the snapshot with the resolved key and optional validated URL override. */
+  fetch(key: string, signal?: AbortSignal, opts?: { endpointOverride?: string }): Promise<ProviderSnapshot>
 }
 
 const UA = 'KimiCLI/1.6'
@@ -114,6 +120,32 @@ export function assertPublicHttpsUrl(raw: string): string {
     }
   }
   return url.toString()
+}
+
+/**
+ * Resolve the effective request URL for a built-in adapter with optional
+ * `endpointOverrides[id]`:
+ * - Without an override: returns `{ url: defaultUrl, strict: false }`.
+ * - With an override: validates `overrideRaw` via `assertPublicHttpsUrl` AND
+ *   upgrades `strict: true` (refuses 302 redirects + caps response at 256 KiB).
+ *   If the override specifies only an origin (`pathname === '/'`), replaces
+ *   the origin of `defaultUrl` while preserving its pathname and query string
+ *   (supports multi-endpoint adapters like Zhipu/OpenDesign and query builders);
+ *   otherwise replaces the full path while preserving `defaultUrl`'s query string.
+ */
+export function resolveAdapterUrl(defaultUrl: string, overrideRaw?: string): { url: string; strict: boolean } {
+  const trimmed = overrideRaw?.trim() ?? ''
+  if (!trimmed) return { url: defaultUrl, strict: false }
+  const safe = assertPublicHttpsUrl(trimmed)
+  const over = new URL(safe)
+  const def = new URL(defaultUrl)
+  if (over.pathname === '/' || over.pathname === '') {
+    def.protocol = over.protocol
+    def.host = over.host
+    return { url: def.toString(), strict: true }
+  }
+  over.search = def.search
+  return { url: over.toString(), strict: true }
 }
 
 function num(v: unknown): number | undefined {
@@ -524,6 +556,7 @@ interface CatalogEntry {
   keyRefs: string[]
   endpoint: string
   format: string
+  verification: VerificationTier
   /** Suffix resolved from the response (e.g. plan level). */
   planOf?: (body: unknown) => string | undefined
   /** How the key is presented: `Authorization: Bearer` (default) or `x-api-key`. */
@@ -538,16 +571,17 @@ interface CatalogEntry {
   adminOnly?: boolean
 }
 
-function catalogFetch(entry: CatalogEntry): (key: string, signal?: AbortSignal) => Promise<ProviderSnapshot> {
+function catalogFetch(entry: CatalogEntry): DirectAdapter['fetch'] {
   const parser = FORMATS[entry.format]
   if (!parser) throw new Error(`unknown format ${entry.format}`)
-  return async (key, signal) => {
+  return async (key, signal, opts) => {
     const headers: Record<string, string> = entry.auth === 'x-api-key'
       ? { 'x-api-key': key, ...entry.headers }
       : { Authorization: `Bearer ${key}`, ...entry.headers }
     if (entry.format === 'kimi-coding') headers['User-Agent'] = UA
-    const url = entry.buildUrl ? entry.buildUrl(Date.now()) : entry.endpoint
-    const body = await getJson(url, headers, signal)
+    const rawUrl = entry.buildUrl ? entry.buildUrl(Date.now()) : entry.endpoint
+    const resolved = resolveAdapterUrl(rawUrl, opts?.endpointOverride)
+    const body = await getJson(resolved.url, headers, signal, { strict: resolved.strict })
     const items = parser(body)
     const plan = entry.planOf?.(body)
     return {
@@ -602,8 +636,15 @@ export function zhipuAccountItems(body: unknown): QuotaItem[] {
 }
 
 /** 智谱账户余额行（读取失败时由 {@link withExtraItems} 静默跳过）。 */
-async function zhipuAccountRows(key: string, signal?: AbortSignal): Promise<QuotaItem[]> {
-  const body = await getJson(ZHIPU_ACCOUNT_REPORT_URL, { Authorization: `Bearer ${key}`, accept: 'application/json, text/plain, */*' }, signal)
+async function zhipuAccountRows(key: string, signal?: AbortSignal, opts?: { endpointOverride?: string }): Promise<QuotaItem[]> {
+  // Only apply origin-level override to the secondary account-report URL so a single-path override doesn't hit the wrong route.
+  let overrideOrigin: string | undefined
+  if (opts?.endpointOverride?.trim()) {
+    const safe = assertPublicHttpsUrl(opts.endpointOverride)
+    overrideOrigin = new URL(safe).origin
+  }
+  const resolved = resolveAdapterUrl(ZHIPU_ACCOUNT_REPORT_URL, overrideOrigin)
+  const body = await getJson(resolved.url, { Authorization: `Bearer ${key}`, accept: 'application/json, text/plain, */*' }, signal, { strict: resolved.strict })
   return zhipuAccountItems(body)
 }
 
@@ -614,13 +655,16 @@ async function zhipuAccountRows(key: string, signal?: AbortSignal): Promise<Quot
  * @param extra - 追加条目的查询；抛错即忽略。
  * @returns 合并后的适配器。
  */
-export function withExtraItems(base: DirectAdapter, extra: (key: string, signal?: AbortSignal) => Promise<QuotaItem[]>): DirectAdapter {
+export function withExtraItems(
+  base: DirectAdapter,
+  extra: (key: string, signal?: AbortSignal, opts?: { endpointOverride?: string }) => Promise<QuotaItem[]>,
+): DirectAdapter {
   return {
     ...base,
-    async fetch(key, signal) {
-      const snapshot = await base.fetch(key, signal)
+    async fetch(key, signal, opts) {
+      const snapshot = await base.fetch(key, signal, opts)
       try {
-        snapshot.items = [...snapshot.items, ...(await extra(key, signal))]
+        snapshot.items = [...snapshot.items, ...(await extra(key, signal, opts))]
       } catch {
         /* 附加信息是锦上添花：403 / 超时 / 形状变化都不影响主行 */
       }
@@ -740,9 +784,21 @@ export function opendesignPlanItems(plan: unknown, creditsPerUsd: number): Quota
  * 401 的最常见原因是把 `sk-amr-…` 推理 key 填到了这里：面板如果只说
  * 「HTTP 401 unauthenticated」，用户永远猜不到要换一种 key。
  */
-async function opendesignGet(path: string, headers: Record<string, string>, signal: AbortSignal | undefined, label: string): Promise<unknown> {
+async function opendesignGet(
+  path: string,
+  headers: Record<string, string>,
+  signal: AbortSignal | undefined,
+  label: string,
+  endpointOverride?: string,
+): Promise<unknown> {
+  let overrideOrigin: string | undefined
+  if (endpointOverride?.trim()) {
+    const safe = assertPublicHttpsUrl(endpointOverride)
+    overrideOrigin = new URL(safe).origin
+  }
+  const resolved = resolveAdapterUrl(`${OPENDESIGN_CONSOLE}${path}`, overrideOrigin)
   try {
-    return await getJson(`${OPENDESIGN_CONSOLE}${path}`, headers, signal)
+    return await getJson(resolved.url, headers, signal, { strict: resolved.strict })
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error)
     const status = num(/^HTTP (\d+)/.exec(text)?.[1])
@@ -767,7 +823,11 @@ function opendesignUsdText(v: number): string {
  * 一致）；`/billing/summary` 的 `balanceUsd` 在同一账户上报 0.0000，是另一套
  * 口径，不要用它当余额。summary 只用来补累计消费这些纯统计字段。
  */
-export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal): Promise<ProviderSnapshot> {
+export async function fetchOpendesignSnapshot(
+  key: string,
+  signal?: AbortSignal,
+  opts?: { endpointOverride?: string },
+): Promise<ProviderSnapshot> {
   // vela 登录态里的 key 永远优先：用户重新登录 OD 后 controlKey 可能轮换，宿主
   // 侧的同步（controller.syncOpendesignKey）负责把它写回凭证域，这里再兜一层，
   // 免得凭证服务写失败时面板一直用旧 key 撞 401。
@@ -779,7 +839,7 @@ export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal)
   const pinned = process.env.OPENDESIGN_WORKSPACE_ID?.trim() ?? ''
   let workspace = pinned
   if (workspace.length === 0) {
-    const current = await opendesignGet('/workspaces/current', headers, signal, 'workspaces/current')
+    const current = await opendesignGet('/workspaces/current', headers, signal, 'workspaces/current', opts?.endpointOverride)
     const currentBody = (current ?? {}) as Record<string, unknown>
     workspace = str(currentBody.activeWorkspaceId) ?? str(currentBody.workspaceId) ?? ''
     if (workspace.length === 0) throw new Error('该 key 没有可读的工作空间（workspaces/current 没返回 workspaceId）')
@@ -790,12 +850,13 @@ export async function fetchOpendesignSnapshot(key: string, signal?: AbortSignal)
     headers,
     signal,
     'billing/preflight',
+    opts?.endpointOverride,
   ) ?? {}) as Record<string, unknown>
 
   // summary 是锦上添花：拿不到只是少几行统计，不该把整张卡变成 error。
   let summary: Record<string, unknown> | undefined
   try {
-    const body = await opendesignGet('/billing/summary', headers, signal, 'billing/summary')
+    const body = await opendesignGet('/billing/summary', headers, signal, 'billing/summary', opts?.endpointOverride)
     if (body !== null && typeof body === 'object') summary = body as Record<string, unknown>
   } catch {
     /* ignore */
@@ -856,6 +917,8 @@ function entry(e: CatalogEntry): DirectAdapter {
     label: e.label,
     keyRefs: e.keyRefs,
     envKeys: e.keyRefs,
+    verification: e.verification,
+    defaultEndpoint: e.endpoint,
     ...(origin === undefined ? {} : { origins: [origin] }),
     ...(e.adminOnly === true ? { extraRefsFromProviders: false } : {}),
     fetch: catalogFetch(e),
@@ -880,11 +943,11 @@ const kimiPlanOf = (body: unknown): string | undefined => {
  * (see config.KEY_REFS), deletable without touching DSH model routing.
  */
 export const DIRECT_ADAPTERS: DirectAdapter[] = [
-  entry({ id: 'kimi', label: 'Kimi Code', keyRefs: ['KIMI_CODING_API_KEY', 'KIMI_API_KEY'], endpoint: 'https://api.kimi.com/coding/v1/usages', format: 'kimi-coding', planOf: kimiPlanOf }),
-  entry({ id: 'deepseek', label: 'DeepSeek', keyRefs: ['DEEPSEEK_API_KEY'], endpoint: 'https://api.deepseek.com/user/balance', format: 'deepseek-balance' }),
+  entry({ id: 'kimi', label: 'Kimi Code', keyRefs: ['KIMI_CODING_API_KEY', 'KIMI_API_KEY'], endpoint: 'https://api.kimi.com/coding/v1/usages', format: 'kimi-coding', verification: 'verified', planOf: kimiPlanOf }),
+  entry({ id: 'deepseek', label: 'DeepSeek', keyRefs: ['DEEPSEEK_API_KEY'], endpoint: 'https://api.deepseek.com/user/balance', format: 'deepseek-balance', verification: 'verified' }),
   // 配额窗口（Coding Plan）+ 账户余额/累计消费（标准 API key 同样可查）。
   withExtraItems(
-    entry({ id: 'zhipu', label: '智谱 Coding Plan', keyRefs: ['ZAI_CODING_CN_API_KEY', 'ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'], endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', format: 'zai-coding', planOf: zaiPlanOf }),
+    entry({ id: 'zhipu', label: '智谱 Coding Plan', keyRefs: ['ZAI_CODING_CN_API_KEY', 'ZHIPU_API_KEY', 'BIGMODEL_API_KEY', 'GLM_API_KEY'], endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit', format: 'zai-coding', verification: 'verified', planOf: zaiPlanOf }),
     zhipuAccountRows,
   ),
 ]
@@ -894,19 +957,19 @@ export const DIRECT_ADAPTERS: DirectAdapter[] = [
  * resolves (DSH credentials domain or environment), then they join the panel.
  */
 export const CATALOG_EXTRA: DirectAdapter[] = [
-  entry({ id: 'zai', label: 'Z.AI Coding', keyRefs: ['ZAI_API_KEY'], endpoint: 'https://api.z.ai/api/monitor/usage/quota/limit', format: 'zai-coding', planOf: zaiPlanOf }),
-  entry({ id: 'moonshot', label: 'Moonshot', keyRefs: ['MOONSHOT_API_KEY'], endpoint: 'https://api.moonshot.cn/v1/users/me/balance', format: 'moonshot-balance' }),
-  entry({ id: 'openrouter', label: 'OpenRouter', keyRefs: ['OPENROUTER_API_KEY'], endpoint: 'https://openrouter.ai/api/v1/credits', format: 'openrouter-credits' }),
-  entry({ id: 'siliconflow', label: 'SiliconFlow', keyRefs: ['SILICONFLOW_API_KEY'], endpoint: 'https://api.siliconflow.com/v1/user/info', format: 'siliconflow-balance' }),
-  entry({ id: 'siliconflow-cn', label: 'SiliconFlow CN', keyRefs: ['SILICONFLOW_CN_API_KEY'], endpoint: 'https://api.siliconflow.cn/v1/user/info', format: 'siliconflow-balance' }),
-  entry({ id: 'minimax', label: 'MiniMax Coding', keyRefs: ['MINIMAX_API_KEY'], endpoint: 'https://www.minimax.io/v1/token_plan/remains', format: 'minimax-remains' }),
-  entry({ id: 'minimax-cn', label: 'MiniMax Coding CN', keyRefs: ['MINIMAX_CN_API_KEY'], endpoint: 'https://api.minimaxi.com/v1/token_plan/remains', format: 'minimax-remains' }),
-  entry({ id: 'stepfun', label: 'StepFun', keyRefs: ['STEP_API_KEY', 'STEPFUN_API_KEY'], endpoint: 'https://api.stepfun.com/v1/accounts', format: 'stepfun-accounts' }),
-  entry({ id: 'xai', label: 'xAI', keyRefs: ['XAI_API_KEY'], endpoint: 'https://api.x.ai/v1/billing/credits', format: 'xai-credits' }),
-  entry({ id: 'opencode-go', label: 'OpenCode Go', keyRefs: ['OPENCODE_GO_API_KEY'], endpoint: 'https://opencode.ai/zen/go/v1/usage', format: 'opencode-usage' }),
-  entry({ id: 'deepinfra', label: 'DeepInfra', keyRefs: ['DEEPINFRA_API_KEY', 'DEEPINFRA_TOKEN'], endpoint: 'https://api.deepinfra.com/payment/checklist?compute_owed=true', format: 'deepinfra-billing' }),
-  entry({ id: 'venice', label: 'Venice', keyRefs: ['VENICE_API_KEY', 'VENICE_KEY'], endpoint: 'https://api.venice.ai/api/v1/billing/balance', format: 'venice-balance' }),
-  entry({ id: 'neuralwatt', label: 'NeuralWatt', keyRefs: ['NEURALWATT_API_KEY'], endpoint: 'https://api.neuralwatt.com/v1/quota', format: 'neuralwatt-quota' }),
+  entry({ id: 'zai', label: 'Z.AI Coding', keyRefs: ['ZAI_API_KEY'], endpoint: 'https://api.z.ai/api/monitor/usage/quota/limit', format: 'zai-coding', verification: 'verified', planOf: zaiPlanOf }),
+  entry({ id: 'moonshot', label: 'Moonshot', keyRefs: ['MOONSHOT_API_KEY'], endpoint: 'https://api.moonshot.cn/v1/users/me/balance', format: 'moonshot-balance', verification: 'verified' }),
+  entry({ id: 'openrouter', label: 'OpenRouter', keyRefs: ['OPENROUTER_API_KEY'], endpoint: 'https://openrouter.ai/api/v1/credits', format: 'openrouter-credits', verification: 'verified' }),
+  entry({ id: 'siliconflow', label: 'SiliconFlow', keyRefs: ['SILICONFLOW_API_KEY'], endpoint: 'https://api.siliconflow.com/v1/user/info', format: 'siliconflow-balance', verification: 'verified' }),
+  entry({ id: 'siliconflow-cn', label: 'SiliconFlow CN', keyRefs: ['SILICONFLOW_CN_API_KEY'], endpoint: 'https://api.siliconflow.cn/v1/user/info', format: 'siliconflow-balance', verification: 'verified' }),
+  entry({ id: 'minimax', label: 'MiniMax Coding', keyRefs: ['MINIMAX_API_KEY'], endpoint: 'https://www.minimax.io/v1/token_plan/remains', format: 'minimax-remains', verification: 'verified' }),
+  entry({ id: 'minimax-cn', label: 'MiniMax Coding CN', keyRefs: ['MINIMAX_CN_API_KEY'], endpoint: 'https://api.minimaxi.com/v1/token_plan/remains', format: 'minimax-remains', verification: 'verified' }),
+  entry({ id: 'stepfun', label: 'StepFun', keyRefs: ['STEP_API_KEY', 'STEPFUN_API_KEY'], endpoint: 'https://api.stepfun.com/v1/accounts', format: 'stepfun-accounts', verification: 'community' }),
+  entry({ id: 'xai', label: 'xAI', keyRefs: ['XAI_API_KEY'], endpoint: 'https://api.x.ai/v1/billing/credits', format: 'xai-credits', verification: 'verified' }),
+  entry({ id: 'opencode-go', label: 'OpenCode Go', keyRefs: ['OPENCODE_GO_API_KEY'], endpoint: 'https://opencode.ai/zen/go/v1/usage', format: 'opencode-usage', verification: 'verified' }),
+  entry({ id: 'deepinfra', label: 'DeepInfra', keyRefs: ['DEEPINFRA_API_KEY', 'DEEPINFRA_TOKEN'], endpoint: 'https://api.deepinfra.com/payment/checklist?compute_owed=true', format: 'deepinfra-billing', verification: 'community' }),
+  entry({ id: 'venice', label: 'Venice', keyRefs: ['VENICE_API_KEY', 'VENICE_KEY'], endpoint: 'https://api.venice.ai/api/v1/billing/balance', format: 'venice-balance', verification: 'community' }),
+  entry({ id: 'neuralwatt', label: 'NeuralWatt', keyRefs: ['NEURALWATT_API_KEY'], endpoint: 'https://api.neuralwatt.com/v1/quota', format: 'neuralwatt-quota', verification: 'community' }),
   // OpenDesign（open-design.ai / Vela）：见文件上方那一段注释。keyRefs 是
   // 控制面 key，不是模型供应商配置里那个 OPENDESIGN_API_KEY（推理 key）——
   // 两者权限完全不同，填错只会得到 401。`extraRefsFromProviders: false`
@@ -917,6 +980,9 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     label: 'OpenDesign',
     keyRefs: ['OPENDESIGN_CONTROL_KEY', 'VELA_CONTROL_KEY'],
     envKeys: ['OPENDESIGN_CONTROL_KEY', 'VELA_CONTROL_KEY'],
+    verification: 'verified',
+    defaultEndpoint: OPENDESIGN_CONSOLE,
+    origins: ['https://amr-api.open-design.ai'],
     extraRefsFromProviders: false,
     fetch: fetchOpendesignSnapshot,
   },
@@ -928,6 +994,7 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     keyRefs: ['OPENAI_ADMIN_KEY'],
     endpoint: 'https://api.openai.com/v1/organization/costs',
     format: 'openai-costs',
+    verification: 'verified',
     adminOnly: true,
     buildUrl: (now) => `https://api.openai.com/v1/organization/costs?start_time=${String(Math.floor(now / 1000) - 30 * 86400)}&bucket_width=1d&limit=31`,
   }),
@@ -937,6 +1004,7 @@ export const CATALOG_EXTRA: DirectAdapter[] = [
     keyRefs: ['ANTHROPIC_ADMIN_KEY'],
     endpoint: 'https://api.anthropic.com/v1/organizations/cost_report',
     format: 'anthropic-costs',
+    verification: 'verified',
     auth: 'x-api-key',
     headers: { 'anthropic-version': '2023-06-01', 'User-Agent': UA },
     adminOnly: true,

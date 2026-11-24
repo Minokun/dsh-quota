@@ -36,6 +36,8 @@ export const RESET_DROP = 3
 export const MIN_SPAN_MS = 30 * 60 * 1000
 /** ETA longer than this is noise (rate ≈ 0) and is not reported. */
 export const MAX_ETA_MS = 60 * 24 * 60 * 60 * 1000
+/** Safety factor comparing ETA against window resetAt (10% margin against boundary jitter). */
+export const PACING_SAFETY_FACTOR = 0.9
 /** 余额型条目：日历时间口径的统计窗口（滚动近 7 天）。 */
 export const SPEND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 /** 余额型条目：样本跨度不足一天时不给日均——几十分钟的活跃速率外推一周会放大数倍。 */
@@ -132,8 +134,43 @@ export function currentSegment(series: Sample[]): Sample[] {
 export interface BurnInsight {
   /** Average consumption rate over the current segment (%/h or units/h). */
   ratePerHour: number
-  /** Estimated minutes until the window/limit is depleted. */
-  etaMinutes: number
+  /** Estimated minutes until the window/limit is depleted (omitted when window resets first). */
+  etaMinutes?: number
+  /**
+   * Compared against `resetAt` when a future reset timestamp is known:
+   * - `true` when `etaMinutes < minutesUntilReset * PACING_SAFETY_FACTOR` (will hit wall before reset);
+   * - `false` when the window resets before depletion (or within safety buffer).
+   */
+  depletesBeforeReset?: boolean
+}
+
+/**
+ * Compare a raw depletion ETA (in minutes) against an item's `resetAt` ISO string.
+ * - Missing or already-past `resetAt`: keeps rounded `etaMinutes`, `depletesBeforeReset` undefined.
+ * - `rawEtaMinutes >= minutesUntilReset`: window resets before depletion → suppresses `etaMinutes`
+ *   and marks `depletesBeforeReset: false` (eliminates false countdowns right before reset).
+ * - `rawEtaMinutes < minutesUntilReset * PACING_SAFETY_FACTOR`: marks `depletesBeforeReset: true`.
+ */
+export function evaluateWindowPacing(
+  rawEtaMinutes: number | undefined,
+  resetAt: string | undefined,
+  now: number,
+): { etaMinutes?: number; depletesBeforeReset?: boolean } {
+  if (rawEtaMinutes === undefined || !Number.isFinite(rawEtaMinutes) || rawEtaMinutes < 0) {
+    return {}
+  }
+  const rounded = Math.round(rawEtaMinutes)
+  if (!resetAt) return { etaMinutes: rounded }
+  const resetMs = Date.parse(resetAt)
+  if (!Number.isFinite(resetMs) || resetMs <= now) return { etaMinutes: rounded }
+  const untilResetMinutes = (resetMs - now) / 60000
+  if (rawEtaMinutes >= untilResetMinutes) {
+    return { depletesBeforeReset: false }
+  }
+  if (rawEtaMinutes < untilResetMinutes * PACING_SAFETY_FACTOR) {
+    return { etaMinutes: rounded, depletesBeforeReset: true }
+  }
+  return { etaMinutes: rounded, depletesBeforeReset: false }
 }
 
 /**
@@ -143,7 +180,11 @@ export interface BurnInsight {
  * the quota would outlive MAX_ETA_MS — a quota that is not meaningfully
  * draining should not produce a scary countdown.
  */
-export function burnInsight(series: Sample[], item: Pick<QuotaItem, 'percent' | 'used' | 'limit' | 'remaining'>, now: number): BurnInsight | undefined {
+export function burnInsight(
+  series: Sample[],
+  item: Pick<QuotaItem, 'percent' | 'used' | 'limit' | 'remaining' | 'resetAt'>,
+  now: number,
+): BurnInsight | undefined {
   const segment = currentSegment(pruneSeries(series, now))
   if (segment.length < 2) return undefined
   const first = segment[0]!
@@ -157,16 +198,21 @@ export function burnInsight(series: Sample[], item: Pick<QuotaItem, 'percent' | 
 
   let left: number | undefined
   if (item.percent !== undefined) {
-    left = 100 - last[1]
+    left = Math.max(0, 100 - last[1])
   } else if (item.remaining !== undefined) {
     left = item.remaining
   } else if (item.limit !== undefined) {
     left = item.limit - last[1]
   }
   if (left === undefined || left < 0) return undefined
-  const etaMinutes = (left / ratePerHour) * 60
-  if (!Number.isFinite(etaMinutes) || etaMinutes * 60000 > MAX_ETA_MS) return undefined
-  return { ratePerHour: Number(ratePerHour.toFixed(2)), etaMinutes: Math.round(etaMinutes) }
+  const rawEtaMinutes = (left / ratePerHour) * 60
+  if (!Number.isFinite(rawEtaMinutes) || rawEtaMinutes * 60000 > MAX_ETA_MS) return undefined
+  const pacing = evaluateWindowPacing(rawEtaMinutes, item.resetAt, now)
+  return {
+    ratePerHour: Number(ratePerHour.toFixed(2)),
+    ...(pacing.etaMinutes === undefined ? {} : { etaMinutes: pacing.etaMinutes }),
+    ...(pacing.depletesBeforeReset === undefined ? {} : { depletesBeforeReset: pacing.depletesBeforeReset }),
+  }
 }
 
 export interface SpendInsight {

@@ -40,4 +40,12 @@ if (match[1] !== anchorName) {
   console.error(`check-client-id: bundle registers "${match[1]}" but is served as "${anchorName}" — update tsdown.config.ts CLIENT_ID or package.json name so they match`)
   process.exit(1)
 }
-console.log(`check-client-id: bundle registers "${match[1]}" == package name ✓`)
+
+for (const rel of ['icon.svg', 'locale/zh.json', 'locale/en.json', 'README.md', 'README.en.md']) {
+  if (!existsSync(join(root, rel))) {
+    console.error(`check-client-id: required bundle asset "${rel}" is missing`)
+    process.exit(1)
+  }
+}
+
+console.log(`check-client-id: bundle registers "${match[1]}" == package name + bundle metadata assets ✓`)
