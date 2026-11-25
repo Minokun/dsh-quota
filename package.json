@@ -1,6 +1,6 @@
 {
   "name": "dsh-quota",
-  "version": "0.14.11",
+  "version": "0.15.0",
   "icon": "./icon.svg",
   "description": "DeepSeek Harness plugin: multi-platform plan quota, API balance, burn-rate pacing radar, composer dock bar, and adaptive session/daily spend ledger via DSH credentials and MCP.",
   "license": "MIT",
