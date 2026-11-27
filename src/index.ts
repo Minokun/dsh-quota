@@ -84,17 +84,19 @@ function atPath(value: unknown, path: readonly string[]): unknown {
 }
 
 /** Volatile profile fields the panel needs: credential ref, endpoint, display label. */
-function profileFacts(profile: unknown): { keyRef?: string; baseURL?: string; label?: string } {
+function profileFacts(profile: unknown): { keyRef?: string; baseURL?: string; label?: string; api?: string } {
   if (profile === null || typeof profile !== 'object') return {}
   const row = profile as Record<string, unknown>
   const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
   const keyRef = text(row.apiKeyEnv)
   const baseURL = text(row.baseURL)
   const label = text(row.displayName) ?? text(row.name)
+  const api = text(row.api)
   return {
     ...keyRef === undefined ? {} : { keyRef },
     ...baseURL === undefined ? {} : { baseURL },
     ...label === undefined ? {} : { label },
+    ...api === undefined ? {} : { api },
   }
 }
 
@@ -129,6 +131,7 @@ export function llmProvidersOf(ctx: Context, settings: SettingsFormsLike | undef
       label: facts.label ?? fallbackLabel ?? id,
       ...facts.keyRef === undefined ? {} : { keyRef: facts.keyRef },
       ...facts.baseURL === undefined ? {} : { baseURL: facts.baseURL },
+      ...facts.api === undefined ? {} : { api: facts.api },
     })
   }
 
