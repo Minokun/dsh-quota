@@ -109,6 +109,26 @@ export interface LlmProviderInfo {
   keyRef?: string
   /** Custom providers only (built-ins keep theirs internal). */
   baseURL?: string
+  /** Wire protocol of a custom provider (`anthropic-messages`, `openai-completions`, …); decides how the `/models` liveness probe authenticates. */
+  api?: string
+}
+
+/**
+ * The liveness request for a provider without a quota row: a model list is
+ * free on every gateway. Anthropic-protocol routes (`api: anthropic-messages`)
+ * list models at `<base>/v1/models` and authenticate with `x-api-key` +
+ * `anthropic-version`; everything else keeps the OpenAI-style `<base>/models`
+ * with a bearer token. A base that already ends in `/v1` is not doubled.
+ */
+export function livenessRequest(baseURL: string, key: string, api?: string): { url: string; headers: Record<string, string> } {
+  const base = baseURL.replace(/\/+$/, '')
+  if (api === 'anthropic-messages') {
+    return {
+      url: `${base}${/\/v1$/.test(base) ? '' : '/v1'}/models`,
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    }
+  }
+  return { url: `${base}/models`, headers: { Authorization: `Bearer ${key}` } }
 }
 
 /**
@@ -925,8 +945,9 @@ export class QuotaController implements QuotaControllerFace {
         if (!key) continue
         const rowId = `probe#${lp.id}`
         const baseURL = lp.baseURL
-        const probeOnce = async (): Promise<Response> => fetch(`${baseURL!.replace(/\/+$/, '')}/models`, {
-          headers: { Authorization: `Bearer ${key.value}` },
+        const liveness = livenessRequest(baseURL, key.value, lp.api)
+        const probeOnce = async (): Promise<Response> => fetch(liveness.url, {
+          headers: liveness.headers,
           signal: AbortSignal.timeout(8000),
         })
         try {
@@ -1187,6 +1208,21 @@ export class QuotaController implements QuotaControllerFace {
         const endpointOverride = this.state().endpointOverrides?.[direct.id]
         await direct.fetch(key.value, AbortSignal.timeout(PROVIDER_TIMEOUT_MS), { endpointOverride })
         return { ok: true, ms: Date.now() - started }
+      } catch (error) {
+        return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
+    // Liveness-only cards (`probe#<provider>`, a model provider with no quota
+    // row): re-run the same `/models` request the refresh made.
+    if (platform.startsWith('probe#')) {
+      const lp = this.getProviders().find((p) => `probe#${p.id}` === platform)
+      if (!lp?.keyRef || !lp.baseURL) return { ok: false, ms: 0, message: '未找到该模型供应商的 baseURL 或凭证引用' }
+      const key = await resolveKey(this.getCredentials(), [lp.keyRef], [lp.keyRef])
+      if (!key) return { ok: false, ms: 0, message: '未找到 API key（DSH 凭证与环境变量均无）' }
+      const liveness = livenessRequest(lp.baseURL, key.value, lp.api)
+      try {
+        const resp = await fetch(liveness.url, { headers: liveness.headers, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) })
+        return resp.ok ? { ok: true, ms: Date.now() - started } : { ok: false, ms: Date.now() - started, message: `探测失败 HTTP ${resp.status}` }
       } catch (error) {
         return { ok: false, ms: Date.now() - started, message: error instanceof Error ? error.message : String(error) }
       }

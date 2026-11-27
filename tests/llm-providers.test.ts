@@ -28,11 +28,11 @@ test('native providers (deepseek-official) are read from their own settings name
   })
   const rows = llmProvidersOf(ctx, formsWith({
     'llm-deepseek': { apiKeyEnv: 'DEEPSEEK_API_KEY', models: [{ id: 'deepseek-flash' }] },
-    'llm-pi-ai': { providers: { 'kimi-coding': { apiKeyEnv: 'KIMI_CODING_API_KEY', baseURL: 'https://api.kimi.com/coding' } } },
+    'llm-pi-ai': { providers: { 'kimi-coding': { apiKeyEnv: 'KIMI_CODING_API_KEY', baseURL: 'https://api.kimi.com/coding', api: 'anthropic-messages' } } },
   }))
   assert.deepEqual(rows, [
     { id: 'deepseek-official', label: 'DeepSeek', keyRef: 'DEEPSEEK_API_KEY' },
-    { id: 'kimi-coding', label: 'Kimi Code', keyRef: 'KIMI_CODING_API_KEY', baseURL: 'https://api.kimi.com/coding' },
+    { id: 'kimi-coding', label: 'Kimi Code', keyRef: 'KIMI_CODING_API_KEY', baseURL: 'https://api.kimi.com/coding', api: 'anthropic-messages' },
   ])
 })
 
